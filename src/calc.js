@@ -1,0 +1,886 @@
+'use strict';
+
+// ── Constants ──────────────────────────────────────────────────────────────
+const RHO_STEEL  = 7850;
+const RHO_WATER  = 1025;
+const G          = 9.81;
+const HYD_EFF    = 0.85;
+const P_INFLATE  = 1.5;   // bar — fixed seal inflation pressure
+
+const el = id => document.getElementById(id);
+
+// ── Geometry helpers ───────────────────────────────────────────────────────
+function ringArea(d, wt) {
+  const di = Math.max(d - 2 * wt, 0.05);
+  return Math.PI / 4 * (d * d - di * di);
+}
+function innerArea(d, wt) {
+  const di = Math.max(d - 2 * wt, 0.05);
+  return Math.PI / 4 * di * di;
+}
+function outerArea(d) { return Math.PI / 4 * d * d; }
+
+// ── Read inputs ────────────────────────────────────────────────────────────
+function getInputs() {
+  const dBase      = parseFloat(el('dBase').value);
+  const dTop       = parseFloat(el('dTop').value);
+  const wt_m       = parseFloat(el('wt').value) / 1000;
+  const plen       = parseFloat(el('plen').value);
+  const taperStart = parseFloat(el('taperStart').value);
+  const taperLen   = parseFloat(el('taperLen').value);
+  const emb        = parseFloat(el('emb').value);
+  const soilSel    = el('soil').value;
+  const usf_kPa    = soilSel === 'custom' ? parseFloat(el('usf').value) : parseFloat(soilSel);
+  const fos        = parseFloat(el('fos').value);
+  const upperLen   = Math.max(plen - taperStart - taperLen, 0.5);
+
+  const tipType    = el('tip-soil-type').value;
+  const su_tip     = parseFloat(el('su-tip').value);
+  const nq_tip     = parseFloat(el('nq-tip').value);
+  const gamma_sub  = parseFloat(el('gamma-sub').value);
+
+  return { dBase, dTop, wt_m, plen, taperStart, taperLen, upperLen, emb,
+           usf_kPa, fos, tipType, su_tip, nq_tip, gamma_sub };
+}
+
+// ── Tip suction calculation ────────────────────────────────────────────────
+// Clay (plugged): F_tip = Nc × Su × A_inner  (Nc = 9, deep condition)
+// Sand (unplugged): F_tip = Nq × σv'_tip × A_annular  where σv' = γ_sub × emb
+function calculateTipSuction(inp) {
+  const dInner  = inp.dBase - 2 * inp.wt_m;
+  const A_inner = Math.PI / 4 * dInner * dInner;
+  const A_annul = ringArea(inp.dBase, inp.wt_m);   // steel annulus only
+
+  let tipForce_N = 0, plugged = false, label = '';
+
+  if (inp.tipType === 'clay') {
+    const Nc = 9.0;
+    tipForce_N = Nc * inp.su_tip * 1000 * A_inner;
+    plugged = true;
+    label = `Clay plugged: N_c(${Nc}) × S_u(${inp.su_tip} kPa) × A_inner(${A_inner.toFixed(2)} m²)`;
+  } else if (inp.tipType === 'sand') {
+    const sigma_v = inp.gamma_sub * 1000 * inp.emb;   // Pa
+    tipForce_N = inp.nq_tip * sigma_v * A_annul;
+    plugged = false;
+    label = `Sand unplugged: N_q(${inp.nq_tip}) × σv'(${(sigma_v/1000).toFixed(0)} kPa) × A_annul(${A_annul.toFixed(2)} m²)`;
+  }
+
+  return {
+    tipForce_N,
+    tipForce_kN: tipForce_N / 1000,
+    tipForce_t:  tipForce_N / (G * 1000),
+    plugged,
+    label,
+    A_inner,
+    A_annul,
+    tipType: inp.tipType,
+  };
+}
+
+// ── Core hydraulic calculation ─────────────────────────────────────────────
+function calculate(inp) {
+  const { dBase, dTop, wt_m, plen, taperStart, taperLen, upperLen, emb, usf_kPa, fos } = inp;
+  const dMid = (dBase + dTop) / 2;
+
+  const steelVol = ringArea(dBase, wt_m) * taperStart
+                 + ringArea(dMid,  wt_m) * taperLen
+                 + ringArea(dTop,  wt_m) * upperLen;
+
+  const totalVol = outerArea(dBase) * taperStart
+                 + outerArea(dMid)  * taperLen
+                 + outerArea(dTop)  * upperLen;
+
+  // Embedment always within lower straight section
+  const skinFriction_N = usf_kPa * 1000 * (Math.PI * dBase) * emb;
+  const pileWeight_N   = steelVol * RHO_STEEL * G;
+  const buoyancy_N     = totalVol * RHO_WATER * G;
+
+  // Tip suction
+  const ts = calculateTipSuction(inp);
+
+  const baseForce_N   = skinFriction_N + pileWeight_N - buoyancy_N + ts.tipForce_N;
+  const designForce_N = baseForce_N * fos;
+  const hydForce_N    = designForce_N / HYD_EFF;
+
+  const iAreaBase            = innerArea(dBase, wt_m);
+  const breakoutPressure_bar = (hydForce_N / iAreaBase) / 1e5;
+
+  const vel_ms                 = emb / (4 * 3600);
+  const extractionFlow_Ls      = iAreaBase * vel_ms * 1000;
+  const breakoutFlow_Ls        = extractionFlow_Ls * 0.12;
+  const extractionPressure_bar = 1.5 + (RHO_WATER * G * emb) / 1e5;
+
+  return {
+    skinFriction_N,
+    skinFriction_MN: skinFriction_N / 1e6,
+    pileWeight_kN:   pileWeight_N / 1000,
+    buoyancy_kN:     buoyancy_N / 1000,
+    tipSuction_kN:   ts.tipForce_kN,
+    tipSuction_t:    ts.tipForce_t,
+    tipSuction_pct:  baseForce_N > 0 ? (ts.tipForce_N / baseForce_N) * 100 : 0,
+    ts,
+    designForce_kN:  designForce_N / 1000,
+    designForce_t:   designForce_N / (G * 1000),
+    hydForce_kN:     hydForce_N / 1000,
+    breakoutPressure_bar,
+    extractionFlow_Ls,
+    breakoutFlow_Ls,
+    extractionPressure_bar,
+    vel_mms:         vel_ms * 1000,
+    pileMass_t:      steelVol * RHO_STEEL / 1000,
+    iAreaBase,
+    upperLen,
+  };
+}
+
+// ── Seal analysis calculation ──────────────────────────────────────────────
+// Physics: for a thin spherical cap membrane under differential pressure ΔP,
+// the horizontal (radial outward) membrane force per unit rim length = ΔP × r_inner / 2
+// This drives the self-energising lip contact force against the pile inner wall.
+function calculateSeal(inp, r) {
+  const dInner    = inp.dBase - 2 * inp.wt_m;
+  const rInner    = dInner / 2;
+  const iArea     = Math.PI / 4 * dInner * dInner;
+
+  const domeRatio  = parseFloat(el('dome-ratio').value);
+  const lipWidth_m = parseFloat(el('lip-width').value) / 1000;
+
+  // Dome geometry — spherical cap
+  const domeH    = domeRatio * rInner;
+  const R_sphere = (rInner * rInner + domeH * domeH) / (2 * domeH);
+  const rimAngle_deg = Math.asin(rInner / R_sphere) * (180 / Math.PI);
+
+  // Pressure differential across dome
+  const P_applied = r.breakoutPressure_bar;
+  const dP_bar    = Math.max(P_applied - P_INFLATE, 0);
+  const dP_Pa     = dP_bar * 1e5;
+
+  // Downward thrust — seabed must resist P_applied acting on the full inner area
+  const downThrust_MN = (P_applied * 1e5 * iArea) / 1e6;
+  const downThrust_t  = (downThrust_MN * 1e6) / (G * 1000);
+
+  // Seabed bearing pressure increase (above ambient) from seal loading
+  // = applied overpressure (the ambient hydrostatic is already in the soil's effective stress)
+  const seabedBearing_kPa = dP_bar * 100;
+
+  // Self-energising radial force per unit rim circumference length
+  // Derivation: membrane tension at rim = ΔP × R_sphere / 2
+  // Horizontal component = tension × sin(rimAngle) = (ΔP × R_sphere / 2) × (r_inner / R_sphere) = ΔP × r_inner / 2
+  const radialFPL_kNm = (dP_Pa * rInner / 2) / 1000;  // kN per metre of rim
+
+  // Total radial force around the full circumference
+  const totalRadial_MN = (radialFPL_kNm * 2 * Math.PI * rInner) / 1000;
+
+  // Lip contact pressure — radial force distributed over lip contact width
+  const lipContact_MPa = (radialFPL_kNm * 1000) / (lipWidth_m * 1e6);
+  const lipContact_bar = lipContact_MPa * 10;
+
+  // Extrusion risk assessment
+  // Reinforced elastomer with backup rings: ~200–400 bar contact capability
+  // Plain rubber without backup rings: ~10–20 bar
+  // Use 300 bar as the "with rings" design limit
+  const extrusionPct = Math.min((lipContact_bar / 300) * 100, 130);
+  const extrusionCls  = extrusionPct >= 100 ? 'high' : extrusionPct >= 50 ? 'moderate' : 'low';
+  const extrusionMsg  = extrusionPct >= 100 ? 'Bespoke high-pressure elastomer specification required'
+                      : extrusionPct >= 50  ? 'Anti-extrusion backup rings essential'
+                      : 'Manageable with standard backup ring arrangement';
+
+  // Hydraulic fracturing at pile tip
+  // Fracturing threshold ≈ K0 × γ_sub_soil × emb (effective horizontal stress at tip depth)
+  // K0 = 0.45 (normally consolidated marine sediment — conservative)
+  // γ_sub = 9 kN/m³ typical submerged unit weight
+  // Fracturing is BENEFICIAL — breaks negative pore pressure (tip suction), conditions soil.
+  // The confined soil plug inside the pile will NOT fail in bearing — it compacts and resists
+  // under full lateral confinement from the pile wall. Classical bearing capacity failure
+  // geometry (lateral shear wedge) cannot form inside a steel tube.
+  const K0            = 0.45;
+  const gammaSub      = 9000;   // N/m³
+  const sigmaH_Pa     = K0 * gammaSub * inp.emb;
+  const fractureThreshold_bar = sigmaH_Pa / 1e5;
+  const fractureRatio = fractureThreshold_bar > 0 ? dP_bar / fractureThreshold_bar : 0;
+  const fracturingActive = fractureRatio >= 1.0;
+  // Bar display: scale so threshold = 20% of bar, for clear visual headroom above
+  const fracturePct   = Math.min((fractureRatio / 5) * 100, 100);
+
+  return {
+    dInner, rInner, domeH, R_sphere, rimAngle_deg,
+    P_applied, dP_bar,
+    downThrust_MN, downThrust_t,
+    seabedBearing_kPa,
+    radialFPL_kNm, totalRadial_MN,
+    lipContact_bar, lipContact_MPa,
+    extrusionPct, extrusionCls, extrusionMsg,
+    fractureThreshold_bar, fractureRatio, fracturingActive, fracturePct,
+    domeRatio, lipWidth_m,
+  };
+}
+
+// ── Seal SVG diagram ───────────────────────────────────────────────────────
+function drawSealSVG(s) {
+  const W = 170, H = 130;
+  const pileX_L = 28, pileX_R = 142;
+  const pileW = pileX_R - pileX_L;
+  const domeBaseY = 85;
+  const domeH_px = Math.round(s.domeRatio * (pileW / 2) * 0.85);
+  const domeTopY = domeBaseY - domeH_px;
+  const cx = (pileX_L + pileX_R) / 2;
+
+  // Sphere radius for arc
+  const rx = (pileX_R - pileX_L) / 2;
+  const rSph_px = (rx * rx + domeH_px * domeH_px) / (2 * domeH_px);
+  const arcCy = domeBaseY - (rSph_px - domeH_px);
+
+  // Seabed hatch
+  let hatchLines = '';
+  for (let y = domeBaseY; y <= H - 5; y += 7) {
+    for (let x = pileX_L; x <= pileX_R; x += 7) {
+      hatchLines += `<line x1="${x}" y1="${y}" x2="${x-7}" y2="${y+7}" stroke="#4e6280" stroke-width="0.6"/>`;
+    }
+  }
+
+  // Pressure arrows above dome (5 arrows)
+  let pressArrows = '';
+  for (let i = 0; i < 5; i++) {
+    const ax = pileX_L + 10 + i * (pileW - 20) / 4;
+    pressArrows += `
+      <line x1="${ax}" y1="${domeTopY - 18}" x2="${ax}" y2="${domeTopY - 4}" stroke="#38bdf8" stroke-width="1.2" marker-end="url(#arrowBlue)"/>`;
+  }
+
+  // Radial force arrows at rim edges
+  const rimArrowLen = 14;
+
+  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrowBlue" markerWidth="5" markerHeight="5" refX="3" refY="2.5" orient="auto">
+      <polygon points="0 0, 5 2.5, 0 5" fill="#38bdf8"/>
+    </marker>
+    <marker id="arrowRed" markerWidth="5" markerHeight="5" refX="0" refY="2.5" orient="auto">
+      <polygon points="5 0, 0 2.5, 5 5" fill="#a78bfa"/>
+    </marker>
+    <marker id="arrowRedR" markerWidth="5" markerHeight="5" refX="3" refY="2.5" orient="auto">
+      <polygon points="0 0, 5 2.5, 0 5" fill="#a78bfa"/>
+    </marker>
+    <clipPath id="pileClip">
+      <rect x="${pileX_L}" y="0" width="${pileW}" height="${H}"/>
+    </clipPath>
+  </defs>
+
+  <!-- Seabed hatch -->
+  <g clip-path="url(#pileClip)">${hatchLines}</g>
+  <line x1="${pileX_L}" y1="${domeBaseY}" x2="${pileX_R}" y2="${domeBaseY}" stroke="#4e6280" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <!-- Pile walls -->
+  <rect x="${pileX_L - 8}" y="5" width="8" height="${H - 10}" rx="1" fill="#1e3252" stroke="#38bdf8" stroke-width="1"/>
+  <rect x="${pileX_R}" y="5" width="8" height="${H - 10}" rx="1" fill="#1e3252" stroke="#38bdf8" stroke-width="1"/>
+
+  <!-- Water column above -->
+  <rect x="${pileX_L}" y="5" width="${pileW}" height="${domeTopY - 5}" fill="rgba(14,165,233,0.08)" rx="0"/>
+  <text x="${cx}" y="${(5 + domeTopY) / 2 + 4}" font-size="9" fill="#38bdf8" text-anchor="middle" font-family="Inter,sans-serif">applied pressure</text>
+
+  <!-- Pressure arrows -->
+  ${pressArrows}
+
+  <!-- Dome arc (convex upward) -->
+  <path d="M ${pileX_L} ${domeBaseY} A ${rSph_px} ${rSph_px} 0 0 1 ${pileX_R} ${domeBaseY}" 
+        fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.8"/>
+
+  <!-- Inflation text below dome -->
+  <text x="${cx}" y="${domeBaseY + 16}" font-size="8" fill="#a78bfa" text-anchor="middle" font-family="Inter,sans-serif" opacity="0.8">1.5 bar inflation</text>
+
+  <!-- Self-energising radial arrows at rim -->
+  <line x1="${pileX_L - 2}" y1="${domeBaseY - 3}" x2="${pileX_L - 2 - rimArrowLen}" y2="${domeBaseY - 3}" 
+        stroke="#a78bfa" stroke-width="1.4" marker-end="url(#arrowRed)"/>
+  <line x1="${pileX_R + 2}" y1="${domeBaseY - 3}" x2="${pileX_R + 2 + rimArrowLen}" y2="${domeBaseY - 3}" 
+        stroke="#a78bfa" stroke-width="1.4" marker-end="url(#arrowRedR)"/>
+
+  <!-- Red seal bar at rim -->
+  <rect x="${pileX_L - 8}" y="${domeBaseY - 6}" width="8" height="6" rx="1" fill="#ef4444" opacity="0.85"/>
+  <rect x="${pileX_R}" y="${domeBaseY - 6}" width="8" height="6" rx="1" fill="#ef4444" opacity="0.85"/>
+
+  <!-- Labels -->
+  <text x="2" y="${domeBaseY - 10}" font-size="8" fill="#a78bfa" font-family="Inter,sans-serif">radial</text>
+  <text x="2" y="${domeBaseY - 2}" font-size="8" fill="#a78bfa" font-family="Inter,sans-serif">force</text>
+  <text x="${pileX_R + 12}" y="${domeBaseY - 10}" font-size="8" fill="#a78bfa" font-family="Inter,sans-serif">radial</text>
+  <text x="${pileX_R + 12}" y="${domeBaseY - 2}" font-size="8" fill="#a78bfa" font-family="Inter,sans-serif">force</text>
+  <text x="${cx}" y="${H - 3}" font-size="8" fill="#4e6280" text-anchor="middle" font-family="Inter,sans-serif">seabed</text>
+</svg>`;
+}
+
+// ── Pile canvas drawing ────────────────────────────────────────────────────
+function drawPileOnCanvas(canvas, inp, opts) {
+  opts = opts || {};
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const { dBase, dTop, plen, taperStart, taperLen, emb } = inp;
+  const upperLen = inp.upperLen;
+
+  const PT = opts.padTop    || 36;
+  const PB = opts.padBottom || 28;
+  const PL = opts.padLeft   || 8;
+  const PR = opts.padRight  || 72;
+
+  const drawH  = H - PT - PB;
+  const pxPerM = drawH / plen;
+  const maxHalf = (W - PL - PR) / 2;
+  const scaleD  = maxHalf / (dBase / 2);
+  const cx = PL + maxHalf;
+
+  const yFB = m => H - PB - m * pxPerM;
+  const xL  = d => cx - (d / 2) * scaleD;
+  const xR  = d => cx + (d / 2) * scaleD;
+
+  const yBot       = yFB(0);
+  const yTaperBase = yFB(taperStart);
+  const yTaperTop  = yFB(taperStart + taperLen);
+  const yTop       = yFB(plen);
+  const ySeabed    = yFB(emb);
+
+  // Ground hatch
+  const hc = document.createElement('canvas'); hc.width = 8; hc.height = 8;
+  const hx = hc.getContext('2d'); hx.strokeStyle = 'rgba(78,98,128,0.4)'; hx.lineWidth = 0.8;
+  hx.beginPath(); hx.moveTo(0, 8); hx.lineTo(8, 0); hx.stroke();
+  ctx.fillStyle = ctx.createPattern(hc, 'repeat');
+  ctx.fillRect(0, ySeabed, W, H - ySeabed);
+
+  // Seabed line
+  ctx.setLineDash([6, 4]); ctx.strokeStyle = '#334155'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0, ySeabed); ctx.lineTo(W, ySeabed); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = '10px Inter, sans-serif'; ctx.fillStyle = '#475569'; ctx.textAlign = 'left';
+  ctx.fillText('seabed', 3, ySeabed - 4);
+
+  // Pile polygon
+  const leftPts  = [[xL(dTop),yTop],[xL(dTop),yTaperTop],[xL(dBase),yTaperBase],[xL(dBase),yBot]];
+  const rightPts = [[xR(dBase),yBot],[xR(dBase),yTaperBase],[xR(dTop),yTaperTop],[xR(dTop),yTop]];
+  const all = [...leftPts, ...rightPts];
+
+  function interpX(p1, p2, y) { return p1[0] + (y - p1[1]) / (p2[1] - p1[1]) * (p2[0] - p1[0]); }
+  function clipSide(pts) {
+    const r = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      if (pts[i][1] >= ySeabed) r.push(pts[i]);
+      if ((pts[i][1] < ySeabed) !== (pts[i+1][1] < ySeabed))
+        r.push([interpX(pts[i], pts[i+1], ySeabed), ySeabed]);
+    }
+    if (pts[pts.length-1][1] >= ySeabed) r.push(pts[pts.length-1]);
+    return r;
+  }
+  const bL = clipSide(leftPts), bR = clipSide(rightPts);
+  const buried = [...bL, ...[...bR].reverse()];
+  if (buried.length >= 3) {
+    ctx.beginPath(); ctx.moveTo(buried[0][0], buried[0][1]);
+    buried.slice(1).forEach(p => ctx.lineTo(p[0], p[1]));
+    ctx.closePath(); ctx.fillStyle = 'rgba(14,165,233,0.2)'; ctx.fill();
+  }
+
+  ctx.beginPath(); ctx.moveTo(all[0][0], all[0][1]);
+  all.slice(1).forEach(p => ctx.lineTo(p[0], p[1]));
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(14,165,233,0.07)'; ctx.fill();
+  ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 1.8; ctx.stroke();
+
+  // Zone labels
+  const lx = xR(dBase) + 5;
+  ctx.strokeStyle = 'rgba(125,211,252,0.3)'; ctx.lineWidth = 0.8;
+  ctx.font = '9px JetBrains Mono, monospace'; ctx.fillStyle = '#7dd3fc'; ctx.textAlign = 'left';
+  function zoneLabel(yA, yB, txt) {
+    const my = (yA + yB) / 2;
+    ctx.beginPath(); ctx.moveTo(lx, yA); ctx.lineTo(lx+3, yA); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(lx, yB); ctx.lineTo(lx+3, yB); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(lx+1.5, yA); ctx.lineTo(lx+1.5, yB); ctx.stroke();
+    ctx.fillText(txt, lx+6, my+3);
+  }
+  zoneLabel(yTaperBase, yBot,       `${taperStart}m`);
+  zoneLabel(yTaperTop,  yTaperBase, `${taperLen}m`);
+  zoneLabel(yTop,       yTaperTop,  `${upperLen.toFixed(0)}m`);
+
+  ctx.font = '9px JetBrains Mono, monospace'; ctx.fillStyle = '#38bdf8'; ctx.textAlign = 'center';
+  ctx.fillText(`⌀${dBase.toFixed(2)}m`, cx, yBot + 14);
+  ctx.fillText(`⌀${dTop.toFixed(2)}m`,  cx, yTop - 7);
+  ctx.fillStyle = '#64748b'; ctx.font = '9px Inter, sans-serif';
+  ctx.fillText(`L = ${plen}m`, cx, yTop - 18);
+  const embMidY = (ySeabed + yBot) / 2;
+  ctx.fillStyle = '#38bdf8'; ctx.font = '9px JetBrains Mono, monospace';
+  ctx.fillText(`${emb}m emb.`, cx, embMidY + 3);
+
+  // Base seal
+  const sXL = xL(dBase), sXR = xR(dBase);
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(sXL, ySeabed - 4, sXR - sXL, 7, 2);
+  else ctx.rect(sXL, ySeabed - 4, sXR - sXL, 7);
+  ctx.fillStyle = '#ef4444'; ctx.globalAlpha = 0.9; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.font = '9px Inter, sans-serif'; ctx.fillStyle = '#fca5a5'; ctx.textAlign = 'left';
+  ctx.fillText('▲ base seal', 3, ySeabed + 12);
+}
+
+// ── Button state machine ───────────────────────────────────────────────────
+let _dirty = false, _lastResult = null;
+
+function applyBtnState(btn, label, iC, iS, iD, state) {
+  if (!btn) return;
+  btn.classList.remove('dirty','done','spinning');
+  [iC,iS,iD].forEach(i => { if(i) i.style.display = 'none'; });
+  if (state === 'idle')     { if(iC) iC.style.display=''; if(label) label.textContent='Calculate'; }
+  else if (state==='dirty') { if(iC) iC.style.display=''; btn.classList.add('dirty'); if(label) label.textContent='Calculate'; }
+  else if (state==='spinning') { if(iS) iS.style.display=''; btn.classList.add('spinning'); if(label) label.textContent='Calculating…'; }
+  else if (state==='done')  { if(iD) iD.style.display=''; btn.classList.add('done'); if(label) label.textContent='Done'; }
+}
+
+function setButtonState(state) {
+  applyBtnState(el('calc-btn'),     el('calc-btn-label'),     el('btn-icon-calc'),     el('btn-icon-spin'),     el('btn-icon-done'),     state);
+  applyBtnState(el('hdr-calc-btn'), el('hdr-calc-btn-label'), el('hdr-btn-icon-calc'), el('hdr-btn-icon-spin'), el('hdr-btn-icon-done'), state);
+  const note = el('calc-btn-note');
+  if (note) note.classList.toggle('visible', state === 'dirty');
+  if (state === 'done') setTimeout(() => { if(!_dirty) setButtonState('idle'); }, 2400);
+}
+function markDirty() { _dirty = true; setButtonState('dirty'); }
+
+function runCalculation() {
+  setButtonState('spinning');
+  _dirty = false;
+  // If on report tab, switch back to calculator to show results
+  if (el('tab-panel-report').style.display !== 'none') {
+    el('tab-calc-btn').click();
+  }
+  setTimeout(() => {
+    const inp = getInputs();
+    const r   = calculate(inp);
+    _lastResult = { inp, r };
+    renderResults(inp, r);
+    setButtonState('done');
+  }, 320);
+}
+
+// ── Helper: gauge bar HTML ─────────────────────────────────────────────────
+function gaugeBar(pct, colour, extraClass) {
+  const fill = Math.min(pct, 100);
+  const over = pct > 100 ? Math.min(pct - 100, 20) : 0;
+  return `<div class="${extraClass || 'feas-bar-track'}">
+    <div class="${extraClass ? 'seal-bar-fill' : 'feas-bar-fill'}" style="width:${fill}%;background:${colour}"></div>
+    ${over > 0 ? `<div class="${extraClass ? 'seal-bar-over' : 'feas-bar-over'}" style="width:${over}%"></div>` : ''}
+  </div>`;
+}
+function gaugeColour(pct) {
+  if (pct >= 100) return '#ef4444';
+  if (pct >= 75)  return '#f59e0b';
+  return '#22c55e';
+}
+function overUnder(val, limit, unit) {
+  const d = val - limit;
+  if (d > 0)             return `<span class="feas-over">+${Math.abs(d).toFixed(1)} ${unit} over</span>`;
+  if (d > -limit * 0.25) return `<span class="feas-near">${Math.abs(d).toFixed(1)} ${unit} headroom</span>`;
+  return                        `<span class="feas-clear">${Math.abs(d).toFixed(1)} ${unit} headroom</span>`;
+}
+
+// ── Render results ─────────────────────────────────────────────────────────
+function renderResults(inp, r) {
+  // Geometry summary
+  el('geom-summary').innerHTML =
+    `<strong>${inp.taperStart}m</strong> lower (⌀${inp.dBase.toFixed(2)}m) + ` +
+    `<strong>${inp.taperLen}m</strong> taper + ` +
+    `<strong>${r.upperLen.toFixed(0)}m</strong> upper (⌀${inp.dTop.toFixed(2)}m) ` +
+    `= <strong>${(inp.taperStart + inp.taperLen + r.upperLen).toFixed(0)}m</strong>. ` +
+    `Embedment <strong>${inp.emb}m</strong> in lower straight section.`;
+
+  el('fos-indicator').textContent = inp.fos > 1
+    ? `+${((inp.fos - 1) * 100).toFixed(0)}% additional load above calculated value` : '';
+
+  // Diagrams
+  drawPileOnCanvas(el('pile-canvas'), inp);
+  const hc = el('hero-canvas');
+  if (hc) drawPileOnCanvas(hc, inp, { padTop:40, padBottom:30, padLeft:10, padRight:80 });
+
+  // Hero stats
+  el('hs-force').textContent    = r.designForce_kN.toFixed(0) + ' kN';
+  el('hs-pressure').textContent = r.breakoutPressure_bar.toFixed(1) + ' bar';
+  el('hs-flow').textContent     = r.extractionFlow_Ls.toFixed(0) + ' L/s';
+
+  // Metric cards
+  const pC = r.breakoutPressure_bar > 50 ? 'bad' : r.breakoutPressure_bar > 25 ? 'warn' : 'ok';
+  const fC = r.extractionFlow_Ls > 500 ? 'warn' : 'ok';
+  const tsCls = r.tipSuction_kN > 0 ? (r.tipSuction_pct > 30 ? 'warn' : '') : '';
+  el('metrics-grid').innerHTML = [
+    { label:'Design extraction force', val:r.designForce_kN.toFixed(0)+' kN', val2:r.designForce_t.toFixed(0)+' t', cls:'info highlight' },
+    { label:'Pile steel mass',         val:r.pileMass_t.toFixed(0)+' t',       val2:'', cls:'' },
+    { label:'Break-out pressure',      val:r.breakoutPressure_bar.toFixed(1)+' bar', val2:'', cls:pC },
+    { label:'Extraction flow rate',    val:r.extractionFlow_Ls.toFixed(0)+' L/s', val2:'', cls:fC },
+    { label:'Skin friction',           val:r.skinFriction_MN.toFixed(2)+' MN', val2:'', cls:'' },
+    { label:'Tip suction force',       val: r.tipSuction_kN > 0 ? r.tipSuction_kN.toFixed(0)+' kN' : '—', val2: r.tipSuction_kN > 0 ? r.tipSuction_t.toFixed(0)+' t  ('+r.tipSuction_pct.toFixed(0)+'% of total)' : 'not included', cls: tsCls },
+    { label:'Extraction velocity',     val:r.vel_mms.toFixed(3)+' mm/s', val2:'4-hr target', cls:'' },
+  ].map(m => `<div class="metric-card ${m.cls}"><div class="mc-label">${m.label}</div><div class="mc-val">${m.val}</div>${m.val2?`<div class="mc-val2">${m.val2}</div>`:''}</div>`).join('');
+
+  // Force breakdown panel
+  const fbHtml = `
+    <div class="phase-block">
+      <div class="phase-title">Force breakdown — breakout</div>
+      <div class="phase-sub">Component forces before factor of safety and hydraulic efficiency</div>
+      <div class="phase-row"><span>Skin friction (${inp.usf_kPa} kPa × ${(Math.PI*inp.dBase).toFixed(2)}m perimeter × ${inp.emb}m)</span><span class="pval">+${r.skinFriction_MN.toFixed(2)} MN</span></div>
+      <div class="phase-row"><span>Pile self-weight</span><span class="pval">+${(r.pileWeight_kN/1000).toFixed(2)} MN</span></div>
+      <div class="phase-row"><span>Buoyancy (upward — deducted)</span><span class="pval">−${(r.buoyancy_kN/1000).toFixed(2)} MN</span></div>
+      ${r.tipSuction_kN > 0 ? `<div class="phase-row" style="color:#fdba74"><span>Tip suction — ${inp.tipType === 'clay' ? 'clay plugged (N_c=9)' : 'sand unplugged (N_q='+inp.nq_tip+')'}</span><span class="pval" style="color:#fdba74">+${(r.tipSuction_kN/1000).toFixed(2)} MN</span></div>` : ''}
+      <div class="phase-row" style="border-top:1px solid rgba(255,255,255,0.15);margin-top:4px;padding-top:6px;font-weight:500;color:var(--white)"><span>Total (unfactored)</span><span class="pval">${((r.designForce_kN/inp.fos)/1000).toFixed(2)} MN</span></div>
+      <div class="phase-row" style="color:var(--sky-light)"><span>× FoS ${inp.fos.toFixed(1)} × efficiency (÷${HYD_EFF}) = hydraulic requirement</span><span class="pval" style="color:var(--sky-light)">${(r.hydForce_kN/1000).toFixed(2)} MN</span></div>
+    </div>`;
+
+  // Tip note in inputs panel
+  if (inp.tipType !== 'none') {
+    el('tip-note').innerHTML = `<strong>Tip suction ${r.tipSuction_kN.toFixed(0)} kN (${r.tipSuction_t.toFixed(0)} t)</strong> — ${r.tipSuction_pct.toFixed(0)}% of total unfactored extraction force. ${r.tipSuction_pct > 25 ? 'Dominant load component — Phase 1 hydraulic pre-conditioning is critical.' : 'Significant but not dominant. Phase 1 pulse will address.'}`;
+    el('tip-note').style.display = '';
+  } else {
+    el('tip-note').innerHTML = 'Tip suction not included — result is a lower-bound estimate. Consider activating for maximum potential load.';
+    el('tip-note').style.display = '';
+  }
+
+  // Phase blocks
+  el('phase-blocks').innerHTML = fbHtml + `
+    <div class="phase-block">
+      <div class="phase-title">Phase 1 — break-out</div>
+      <div class="phase-sub">High-pressure pulse to shear soil skin friction and initiate pile movement</div>
+      <div class="phase-row"><span>Required pressure (FoS ${inp.fos.toFixed(1)}×)</span><span class="pval">${r.breakoutPressure_bar.toFixed(1)} bar</span></div>
+      <div class="phase-row"><span>Flow during break-out</span><span class="pval">${r.breakoutFlow_Ls.toFixed(0)} L/s</span></div>
+      <div class="phase-row"><span>Hydraulic force required</span><span class="pval">${(r.hydForce_kN/1000).toFixed(2)} MN</span></div>
+      <span class="pump-tag triplex">✓ Triplex plunger pump — high pressure</span>
+    </div>
+    <div class="phase-block">
+      <div class="phase-title">Phase 2 — extraction</div>
+      <div class="phase-sub">High-volume flow to sustain 4-hour extraction; valve manifold switches pump class after break-out</div>
+      <div class="phase-row"><span>Required flow rate</span><span class="pval">${r.extractionFlow_Ls.toFixed(0)} L/s</span></div>
+      <div class="phase-row"><span>Working pressure</span><span class="pval">${r.extractionPressure_bar.toFixed(1)} bar</span></div>
+      <div class="phase-row"><span>Extraction velocity (4-hr target)</span><span class="pval">${r.vel_mms.toFixed(3)} mm/s</span></div>
+      <div class="phase-row"><span>Embedment to clear</span><span class="pval">${inp.emb}m in 4.0 hrs</span></div>
+      <span class="pump-tag centrifugal">✓ Large centrifugal seawater pump — high flow</span>
+    </div>`;
+
+  // Pump feasibility
+  const lP  = parseFloat(el('lim-pressure').value) || 50;
+  const lF  = parseFloat(el('lim-flow').value) || 600;
+  const pPct = Math.min((r.breakoutPressure_bar / lP) * 100, 120);
+  const fPct = Math.min((r.extractionFlow_Ls / lF) * 100, 120);
+  const pc   = gaugeColour(pPct), fc = gaugeColour(fPct);
+  const oS   = (pPct >= 100 || fPct >= 100) ? 'difficult' : (pPct >= 75 || fPct >= 75) ? 'marginal' : 'ok';
+  const oMsg = { ok:'✓ Both parameters within commercial pump envelope for single-unit operation.', marginal:'⚠ One or more parameters approaching single-unit equipment limits. Verify with pump supplier before committing to design.', difficult:'✗ Parameter(s) exceed single-unit limits. Multiple pump sets in parallel required, or review pile/soil inputs.' };
+  el('feasibility-block').innerHTML = `
+    <div class="feasibility ${oS}">
+      <div class="feas-verdict">${oMsg[oS]}</div>
+      <div class="feas-gauges">
+        <div class="feas-gauge-row">
+          <div class="feas-gauge-label"><span>Break-out pressure</span><span class="feas-nums"><strong style="color:#eef4fc">${r.breakoutPressure_bar.toFixed(1)} bar</strong><span class="feas-sep">/</span><span class="feas-limit">${lP} bar limit</span>${overUnder(r.breakoutPressure_bar,lP,'bar')}</span></div>
+          ${gaugeBar(pPct, pc)}
+          <div class="feas-pct" style="color:${pc}">${pPct.toFixed(0)}% of limit</div>
+        </div>
+        <div class="feas-gauge-row">
+          <div class="feas-gauge-label"><span>Extraction flow rate</span><span class="feas-nums"><strong style="color:#eef4fc">${r.extractionFlow_Ls.toFixed(0)} L/s</strong><span class="feas-sep">/</span><span class="feas-limit">${lF} L/s limit</span>${overUnder(r.extractionFlow_Ls,lF,'L/s')}</span></div>
+          ${gaugeBar(fPct, fc)}
+          <div class="feas-pct" style="color:${fc}">${fPct.toFixed(0)}% of limit</div>
+        </div>
+      </div>
+      <div class="feas-note">Limits adjustable in Pump equipment limits panel. Defaults reflect typical single-unit North Sea pump rental ratings.</div>
+    </div>`;
+
+  // Seal analysis
+  const s = calculateSeal(inp, r);
+  const extC   = gaugeColour(s.extrusionPct);
+
+  el('seal-analysis').innerHTML = `
+    <div class="seal-panel">
+      <div class="seal-panel-header">
+        <div class="seal-panel-title">Base seal loading analysis</div>
+        <span class="seal-at-pressure">At break-out pressure: ${s.P_applied.toFixed(1)} bar</span>
+      </div>
+      <div class="seal-body">
+        <div class="seal-svg-wrap">${drawSealSVG(s)}</div>
+        <div class="seal-data">
+
+          <div>
+            <div class="seal-group-title">Seal geometry</div>
+            <div class="seal-row"><span>Inner pile diameter</span><span class="sval">${s.dInner.toFixed(3)} m</span></div>
+            <div class="seal-row"><span>Dome height</span><span class="sval">${s.domeH.toFixed(2)} m</span></div>
+            <div class="seal-row"><span>Sphere radius of dome</span><span class="sval">${s.R_sphere.toFixed(2)} m</span></div>
+            <div class="seal-row"><span>Rim angle from vertical</span><span class="sval">${s.rimAngle_deg.toFixed(1)}°</span></div>
+            <div class="seal-row"><span>Differential pressure across dome</span><span class="sval">${s.dP_bar.toFixed(1)} bar</span></div>
+          </div>
+
+          <div>
+            <div class="seal-group-title">Force analysis</div>
+            <div class="seal-row"><span>↓ Total downward thrust on seabed</span><span class="sval">${s.downThrust_MN.toFixed(1)} MN <span class="sval2">(${s.downThrust_t.toFixed(0)} t)</span></span></div>
+            <div class="seal-row"><span>Net bearing pressure increase above ambient</span><span class="sval">${s.seabedBearing_kPa.toFixed(0)} kPa</span></div>
+            <div class="seal-row"><span>← → Self-energising radial force</span><span class="sval">${s.radialFPL_kNm.toFixed(0)} kN/m of rim</span></div>
+            <div class="seal-row"><span>Total circumferential radial force</span><span class="sval">${s.totalRadial_MN.toFixed(1)} MN</span></div>
+            <div class="seal-row"><span>Lip contact pressure at ${(s.lipWidth_m*1000).toFixed(0)}mm lip width</span><span class="sval">${s.lipContact_bar.toFixed(0)} bar</span></div>
+          </div>
+
+          <div>
+            <div class="seal-group-title">Assessment</div>
+            <div class="seal-gauge-row">
+              <div class="seal-gauge-label">
+                <span>Rubber extrusion risk</span>
+                <span class="seal-gauge-nums"><strong style="color:#eef4fc">${s.lipContact_bar.toFixed(0)} bar contact</strong><span class="feas-sep">/</span><span class="feas-limit">300 bar design limit (with rings)</span></span>
+              </div>
+              ${gaugeBar(s.extrusionPct, extC, 'seal-bar-track')}
+              <div class="seal-pct" style="color:${extC}">${s.extrusionPct.toFixed(0)}% of limit</div>
+              <span class="seal-risk-tag ${s.extrusionCls}">${s.extrusionMsg}</span>
+            </div>
+            <div class="seal-gauge-row" style="margin-top:0.85rem;">
+              <div class="seal-gauge-label">
+                <span>Hydraulic fracturing at pile tip</span>
+                <span class="seal-gauge-nums">
+                  <strong style="color:#eef4fc">ΔP ${s.dP_bar.toFixed(1)} bar</strong>
+                  <span class="feas-sep">vs</span>
+                  <span class="feas-limit">threshold ${s.fractureThreshold_bar.toFixed(2)} bar (K₀=0.45, γ'=9 kN/m³)</span>
+                </span>
+              </div>
+              <div class="seal-bar-track">
+                <div class="seal-bar-fill" style="width:${s.fracturePct}%;background:${s.fracturingActive ? '#22c55e' : '#f59e0b'}"></div>
+              </div>
+              <div class="seal-pct" style="color:${s.fracturingActive ? '#22c55e' : '#f59e0b'}">${s.fractureRatio.toFixed(1)}× threshold</div>
+              <span class="seal-risk-tag ${s.fracturingActive ? 'low' : 'moderate'}">${s.fracturingActive ? '✓ Fracturing active — tip suction being broken, soil matrix pressurised' : 'Below fracturing threshold — tip conditioning not yet initiated'}</span>
+            </div>
+            <div class="seal-confined-note">
+              Confined soil plug inside pile will not fail in bearing — lateral confinement from the pile wall prevents any shear wedge formation. Under applied pressure the plug compacts and stiffens. This is not a limiting condition for the extraction system.
+            </div>
+          </div>
+
+          <div class="seal-self-energising">
+            <strong>Self-energising mechanism:</strong> The domed geometry converts the applied downward pressure into increasing radial outward force at the lip edges — the seal grips the pile wall harder as pressure builds. At ${s.P_applied.toFixed(1)} bar, the lip exerts <strong>${s.radialFPL_kNm.toFixed(0)} kN per metre</strong> of rim circumference against the pile wall. Seal integrity improves with increasing pressure; the 1.5 bar inflation pressure only serves to set the dome geometry before pressurisation begins.
+          </div>
+
+        </div>
+      </div>
+    </div>`;
+}
+
+// ── Calculate button ───────────────────────────────────────────────────────
+el('calc-btn').addEventListener('click', runCalculation);
+el('hdr-calc-btn').addEventListener('click', runCalculation);
+
+// ── Slider bindings ────────────────────────────────────────────────────────
+const sliderFmt = {
+  dBase:          v => parseFloat(v).toFixed(2)+' m',
+  dTop:           v => parseFloat(v).toFixed(2)+' m',
+  wt:             v => v+' mm',
+  plen:           v => v+' m',
+  taperStart:     v => v+' m',
+  taperLen:       v => v+' m',
+  emb:            v => v+' m',
+  usf:            v => v+' kPa',
+  fos:            v => parseFloat(v).toFixed(1),
+  'lim-pressure': v => v+' bar',
+  'lim-flow':     v => v+' L/s',
+  'dome-ratio':   v => parseFloat(v).toFixed(2),
+  'lip-width':    v => v+' mm',
+  'su-tip':       v => v+' kPa',
+  'nq-tip':       v => v,
+  'gamma-sub':    v => parseFloat(v).toFixed(1)+' kN/m³',
+};
+Object.keys(sliderFmt).forEach(id => {
+  const input = el(id); if (!input) return;
+  input.addEventListener('input', () => {
+    const out = el(id+'-v');
+    if (out) out.textContent = sliderFmt[id](input.value);
+    markDirty();
+  });
+});
+el('soil').addEventListener('change', () => {
+  el('custom-field').style.display = el('soil').value === 'custom' ? '' : 'none';
+  markDirty();
+});
+el('tip-soil-type').addEventListener('change', () => {
+  const t = el('tip-soil-type').value;
+  el('tip-clay-fields').style.display = t === 'clay' ? '' : 'none';
+  el('tip-sand-fields').style.display = t === 'sand' ? '' : 'none';
+  markDirty();
+});
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+el('tab-calc-btn').addEventListener('click', () => {
+  el('tab-calc-btn').classList.add('active');
+  el('tab-report-btn').classList.remove('active');
+  el('tab-panel-calculator').style.display = '';
+  el('tab-panel-report').style.display = 'none';
+});
+
+el('tab-report-btn').addEventListener('click', () => {
+  el('tab-report-btn').classList.add('active');
+  el('tab-calc-btn').classList.remove('active');
+  el('tab-panel-calculator').style.display = 'none';
+  el('tab-panel-report').style.display = '';
+  if (_lastResult) {
+    generateReport(_lastResult.inp, _lastResult.r);
+    el('report-stale').style.display = 'none';
+    el('report-ready').style.display = '';
+  } else {
+    el('report-stale').style.display = '';
+    el('report-ready').style.display = 'none';
+  }
+});
+
+// ── Report generation ──────────────────────────────────────────────────────
+function generateReport(inp, r) {
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-GB', { day:'2-digit', month:'long', year:'numeric' });
+  const timeStr = now.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
+
+  // Capture pile diagram as image
+  const pileCanvas = el('pile-canvas');
+  const pileImgSrc = pileCanvas ? pileCanvas.toDataURL('image/png') : '';
+
+  // Draw a fresh dedicated report pile canvas (taller, cleaner)
+  const rpCanvas = document.createElement('canvas');
+  rpCanvas.width = 180; rpCanvas.height = 420;
+  drawPileOnCanvas(rpCanvas, inp, { padTop:32, padBottom:24, padLeft:8, padRight:66 });
+  const rpImgSrc = rpCanvas.toDataURL('image/png');
+
+  const s  = calculateSeal(inp, r);
+  const ts = r.ts;
+
+  const soilLabel = { '50':'Favourable — soft/loose', '100':'Moderate — medium dense', '150':'Difficult — dense/stiff', 'custom':'Custom' }[inp.usf_kPa.toString()] || `Custom (${inp.usf_kPa} kPa)`;
+  const tipLabel  = { clay:`Clay plugged (N_c = 9, S_u = ${inp.su_tip} kPa)`, sand:`Sand unplugged (N_q = ${inp.nq_tip}, γ' = ${inp.gamma_sub} kN/m³)`, none:'Not included' }[inp.tipType];
+
+  const lP = parseFloat(el('lim-pressure').value) || 50;
+  const lF = parseFloat(el('lim-flow').value) || 600;
+  const pPct = Math.min((r.breakoutPressure_bar / lP) * 100, 120);
+  const fPct = Math.min((r.extractionFlow_Ls / lF) * 100, 120);
+  const gc   = p => p >= 100 ? '#ef4444' : p >= 75 ? '#f59e0b' : '#22c55e';
+  const gcPrint = p => p >= 100 ? 'bad' : p >= 75 ? 'warn' : 'ok';
+
+  const unfactored_MN = (r.designForce_kN / inp.fos) / 1000;
+
+  el('report-content').innerHTML = `
+  <div class="rpt">
+
+    <div class="rpt-header">
+      <div>
+        <div class="rpt-logo">Aqua<span>HERO</span></div>
+        <div style="font-size:0.72rem;color:var(--steel-dim);margin-top:2px;">Aqua Hydraulic Extraction &amp; Recovery Operation — Calculation Report</div>
+      </div>
+      <div class="rpt-meta">
+        Date: ${dateStr} ${timeStr}<br>
+        Version: v1.0<br>
+        Reference: AH-${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}
+      </div>
+    </div>
+
+    <div class="rpt-grid2">
+      <div class="rpt-section">
+        <div class="rpt-section-title">Pile geometry</div>
+        <div class="rpt-kv"><span class="rk">Base diameter</span><span class="rv">${inp.dBase.toFixed(2)} m</span></div>
+        <div class="rpt-kv"><span class="rk">Upper diameter</span><span class="rv">${inp.dTop.toFixed(2)} m</span></div>
+        <div class="rpt-kv"><span class="rk">Avg wall thickness</span><span class="rv">${(inp.wt_m*1000).toFixed(0)} mm</span></div>
+        <div class="rpt-kv"><span class="rk">Total pile length</span><span class="rv">${inp.plen} m</span></div>
+        <div class="rpt-kv"><span class="rk">Lower straight section</span><span class="rv">${inp.taperStart} m</span></div>
+        <div class="rpt-kv"><span class="rk">Taper length</span><span class="rv">${inp.taperLen} m</span></div>
+        <div class="rpt-kv"><span class="rk">Upper straight section</span><span class="rv">${r.upperLen.toFixed(0)} m</span></div>
+        <div class="rpt-kv"><span class="rk">Embedment depth</span><span class="rv">${inp.emb} m</span></div>
+      </div>
+      <div class="rpt-section">
+        <div class="rpt-section-title">Soil &amp; loading</div>
+        <div class="rpt-kv"><span class="rk">Skin friction scenario</span><span class="rv">${inp.usf_kPa} kPa</span></div>
+        <div class="rpt-kv"><span class="rk">Tip suction model</span><span class="rv">${tipLabel}</span></div>
+        <div class="rpt-kv"><span class="rk">Factor of safety</span><span class="rv">${inp.fos.toFixed(1)} ×</span></div>
+        <div class="rpt-kv" style="margin-top:0.75rem;"><span class="rk">Hydraulic efficiency</span><span class="rv">0.85</span></div>
+        <div class="rpt-kv"><span class="rk">Steel density</span><span class="rv">7,850 kg/m³</span></div>
+        <div class="rpt-kv"><span class="rk">Seawater density</span><span class="rv">1,025 kg/m³</span></div>
+        <div class="rpt-kv"><span class="rk">Extraction target</span><span class="rv">4 hours</span></div>
+        <div class="rpt-kv"><span class="rk">Pile steel mass</span><span class="rv">${r.pileMass_t.toFixed(0)} t</span></div>
+      </div>
+    </div>
+
+    <div class="rpt-diagram-row">
+      <div class="rpt-canvas-wrap">
+        <img src="${rpImgSrc}" width="180" height="420" alt="Pile cross-section diagram">
+      </div>
+      <div class="rpt-force-col">
+        <div class="rpt-section-title">Force breakdown at breakout</div>
+        <div class="rpt-kv"><span class="rk">+ Skin friction (${inp.usf_kPa} kPa × ${(Math.PI*inp.dBase).toFixed(2)}m × ${inp.emb}m)</span><span class="rv hi">+${r.skinFriction_MN.toFixed(3)} MN</span></div>
+        <div class="rpt-kv"><span class="rk">+ Pile self-weight</span><span class="rv hi">+${(r.pileWeight_kN/1000).toFixed(3)} MN</span></div>
+        <div class="rpt-kv"><span class="rk">− Buoyancy (deducted)</span><span class="rv" style="color:var(--steel)">−${(r.buoyancy_kN/1000).toFixed(3)} MN</span></div>
+        ${r.tipSuction_kN > 0 ? `<div class="rpt-kv"><span class="rk">+ Tip suction — ${tipLabel}</span><span class="rv orange">+${(r.tipSuction_kN/1000).toFixed(3)} MN</span></div>` : ''}
+        <div class="rpt-total-row"><span>Unfactored total</span><span class="rv">${unfactored_MN.toFixed(3)} MN</span></div>
+        <div class="rpt-kv" style="margin-top:8px;"><span class="rk">× FoS ${inp.fos.toFixed(1)} → design force</span><span class="rv hi">${(r.designForce_kN/1000).toFixed(3)} MN  /  ${r.designForce_t.toFixed(0)} t</span></div>
+        <div class="rpt-kv"><span class="rk">÷ efficiency 0.85 → hydraulic requirement</span><span class="rv hi">${(r.hydForce_kN/1000).toFixed(3)} MN</span></div>
+        ${r.tipSuction_kN > 0 ? `<div style="margin-top:0.75rem;font-size:0.72rem;color:#fdba74;background:rgba(251,146,60,0.08);border-left:3px solid rgba(251,146,60,0.4);border-radius:4px;padding:0.4rem 0.6rem;line-height:1.5;">Tip suction ${r.tipSuction_t.toFixed(0)} t = <strong>${r.tipSuction_pct.toFixed(0)}%</strong> of total unfactored extraction force</div>` : ''}
+      </div>
+    </div>
+
+    <div class="rpt-grid2">
+      <div class="rpt-section">
+        <div class="rpt-section-title">Phase 1 — break-out</div>
+        <div class="rpt-kv"><span class="rk">Required pressure</span><span class="rv ${gcPrint(pPct)}">${r.breakoutPressure_bar.toFixed(1)} bar</span></div>
+        <div class="rpt-kv"><span class="rk">Flow during break-out</span><span class="rv">${r.breakoutFlow_Ls.toFixed(0)} L/s</span></div>
+        <div class="rpt-kv"><span class="rk">Hydraulic force</span><span class="rv">${(r.hydForce_kN/1000).toFixed(2)} MN</span></div>
+        <div class="rpt-kv"><span class="rk">Pump limit</span><span class="rv">${lP} bar</span></div>
+        <div class="rpt-kv"><span class="rk">% of pump limit</span><span class="rv ${gcPrint(pPct)}">${pPct.toFixed(0)}%</span></div>
+        <span class="rpt-tag triplex">Triplex plunger pump</span>
+      </div>
+      <div class="rpt-section">
+        <div class="rpt-section-title">Phase 2 — extraction</div>
+        <div class="rpt-kv"><span class="rk">Required flow rate</span><span class="rv ${gcPrint(fPct)}">${r.extractionFlow_Ls.toFixed(0)} L/s</span></div>
+        <div class="rpt-kv"><span class="rk">Working pressure</span><span class="rv">${r.extractionPressure_bar.toFixed(1)} bar</span></div>
+        <div class="rpt-kv"><span class="rk">Extraction velocity</span><span class="rv">${r.vel_mms.toFixed(3)} mm/s</span></div>
+        <div class="rpt-kv"><span class="rk">Extraction time</span><span class="rv">4.0 hours (${inp.emb} m)</span></div>
+        <div class="rpt-kv"><span class="rk">Flow limit</span><span class="rv">${lF} L/s</span></div>
+        <div class="rpt-kv"><span class="rk">% of pump limit</span><span class="rv ${gcPrint(fPct)}">${fPct.toFixed(0)}%</span></div>
+        <span class="rpt-tag centrifugal">Centrifugal seawater pump</span>
+      </div>
+    </div>
+
+    <div class="rpt-section">
+      <div class="rpt-section-title">Pump feasibility</div>
+      <div class="rpt-bar-row">
+        <span class="rpt-bar-label">Break-out pressure</span>
+        <div class="rpt-bar-track"><div class="rpt-bar-fill" style="width:${Math.min(pPct,100)}%;background:${gc(pPct)}"></div></div>
+        <span class="rpt-bar-pct" style="color:${gc(pPct)}">${r.breakoutPressure_bar.toFixed(1)} / ${lP} bar  (${pPct.toFixed(0)}%)</span>
+      </div>
+      <div class="rpt-bar-row">
+        <span class="rpt-bar-label">Extraction flow rate</span>
+        <div class="rpt-bar-track"><div class="rpt-bar-fill" style="width:${Math.min(fPct,100)}%;background:${gc(fPct)}"></div></div>
+        <span class="rpt-bar-pct" style="color:${gc(fPct)}">${r.extractionFlow_Ls.toFixed(0)} / ${lF} L/s  (${fPct.toFixed(0)}%)</span>
+      </div>
+    </div>
+
+    <div class="rpt-grid2">
+      <div class="rpt-section">
+        <div class="rpt-section-title">Base seal analysis</div>
+        <div class="rpt-kv"><span class="rk">Dome height / inner radius</span><span class="rv">${s.domeRatio.toFixed(2)}</span></div>
+        <div class="rpt-kv"><span class="rk">Dome height</span><span class="rv">${s.domeH.toFixed(2)} m</span></div>
+        <div class="rpt-kv"><span class="rk">Sphere radius</span><span class="rv">${s.R_sphere.toFixed(2)} m</span></div>
+        <div class="rpt-kv"><span class="rk">Differential pressure</span><span class="rv">${s.dP_bar.toFixed(1)} bar</span></div>
+        <div class="rpt-kv"><span class="rk">Downward thrust</span><span class="rv">${s.downThrust_MN.toFixed(1)} MN  (${s.downThrust_t.toFixed(0)} t)</span></div>
+        <div class="rpt-kv"><span class="rk">Self-energising radial force</span><span class="rv">${s.radialFPL_kNm.toFixed(0)} kN/m rim</span></div>
+        <div class="rpt-kv"><span class="rk">Lip contact pressure</span><span class="rv">${s.lipContact_bar.toFixed(0)} bar</span></div>
+        <div class="rpt-kv"><span class="rk">Extrusion risk</span><span class="rv ${s.extrusionCls === 'low' ? 'ok' : s.extrusionCls === 'moderate' ? 'warn' : 'bad'}">${s.extrusionCls.toUpperCase()} — ${s.extrusionMsg}</span></div>
+        <div class="rpt-kv"><span class="rk">Seabed bearing</span><span class="rv ${s.seabedCls === 'low' ? 'ok' : s.seabedCls === 'moderate' ? 'warn' : 'bad'}">${s.seabedBearing_kPa.toFixed(0)} kPa — ${s.seabedCls.toUpperCase()}</span></div>
+      </div>
+      ${r.tipSuction_kN > 0 ? `
+      <div class="rpt-section">
+        <div class="rpt-section-title">Tip suction</div>
+        <div class="rpt-kv"><span class="rk">Soil model</span><span class="rv">${tipLabel}</span></div>
+        <div class="rpt-kv"><span class="rk">Pile condition at tip</span><span class="rv">${ts.plugged ? 'Plugged (full inner area)' : 'Unplugged (annulus only)'}</span></div>
+        <div class="rpt-kv"><span class="rk">Area used</span><span class="rv">${ts.plugged ? ts.A_inner.toFixed(2)+' m² (full inner)' : ts.A_annul.toFixed(2)+' m² (annulus)'}</span></div>
+        <div class="rpt-kv"><span class="rk">Tip suction force</span><span class="rv orange">${r.tipSuction_kN.toFixed(0)} kN  /  ${r.tipSuction_t.toFixed(0)} t</span></div>
+        <div class="rpt-kv"><span class="rk">% of unfactored total</span><span class="rv orange">${r.tipSuction_pct.toFixed(0)}%</span></div>
+        <div style="margin-top:0.65rem;font-size:0.72rem;color:var(--steel-dim);line-height:1.5;font-style:italic;">Phase 1 hydraulic pre-conditioning breaks negative pore pressure at tip before upward extraction force is applied. Crane-only extraction must overcome skin friction and tip suction simultaneously.</div>
+      </div>` : `
+      <div class="rpt-section">
+        <div class="rpt-section-title">Tip suction</div>
+        <div style="font-size:0.78rem;color:var(--steel-dim);padding:0.5rem 0;font-style:italic;">Not included in this calculation. Activate the Tip Suction panel to compute maximum potential extraction loads.</div>
+      </div>`}
+    </div>
+
+    <div class="rpt-disclaimer">
+      This report was generated by AquaHERO v1.0 on ${dateStr} at ${timeStr}. AquaHERO — Aqua Hydraulic Extraction &amp; Recovery Operation. All outputs are for engineering guidance only and require independent verification by a qualified engineer before use in design, planning, or offshore operations. Assumptions: hydraulic efficiency 0.85; steel density 7,850 kg/m³; seawater density 1,025 kg/m³; embedment within lower straight pile section; 4-hour extraction target; spherical cap dome geometry; inflation pressure 1.5 bar.
+    </div>
+
+  </div>`;
+}
+
+// ── Initial render ─────────────────────────────────────────────────────────
+(function init() {
+  const inp = getInputs();
+  const r   = calculate(inp);
+  _lastResult = { inp, r };
+  renderResults(inp, r);
+  setButtonState('idle');
+})();

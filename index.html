@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AquaHERO — Hydraulic Monopile Extraction Calculator</title>
+  <meta name="description" content="AquaHERO — Aqua Hydraulic Extraction and Recovery Operation. Engineering calculator for hydraulic monopile extraction in offshore wind decommissioning.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="logo">
+        <div class="logo-wordmark">
+          <div class="logo-name"><span class="logo-aqua">Aqua</span><span class="logo-hero">HERO</span></div>
+          <div class="logo-sub">Aqua Hydraulic Extraction &amp; Recovery Operation</div>
+        </div>
+      </div>
+      <nav class="header-nav">
+        <a href="#calculator" class="nav-cta">Open calculator</a>
+        <button class="hdr-calc-btn" id="hdr-calc-btn" type="button">
+          <span aria-hidden="true">
+            <svg id="hdr-btn-icon-calc" width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="1" width="12" height="12" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 4h2M4 7h6M4 10h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            <svg id="hdr-btn-icon-spin" width="14" height="14" viewBox="0 0 14 14" fill="none" style="display:none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.3" stroke-dasharray="17 17" stroke-linecap="round"/></svg>
+            <svg id="hdr-btn-icon-done" width="14" height="14" viewBox="0 0 14 14" fill="none" style="display:none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 7l2 2 3-3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span id="hdr-calc-btn-label">Calculate</span>
+        </button>
+        <span class="version-tag">v1.0</span>
+      </nav>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div class="hero-bg-grid" aria-hidden="true"></div>
+    <div class="hero-scan" aria-hidden="true"></div>
+    <div class="hero-inner">
+      <div class="hero-text">
+        <div class="hero-eyebrow">Offshore wind decommissioning</div>
+        <h1 class="hero-title"><span class="hero-aqua">Aqua</span><span class="hero-hero-word">HERO</span><br><span class="hero-accent">Hydraulic monopile</span><br><span class="hero-accent">extraction calculator</span></h1>
+        <p class="hero-desc">Aqua Hydraulic Extraction &amp; Recovery Operation. Compute break-out pressures, extraction flow rates, pump class requirements, base seal loading and tip suction for complete monopile recovery from offshore wind foundations.</p>
+        <div class="hero-stats">
+          <div class="hstat"><div class="hstat-val" id="hs-force">—</div><div class="hstat-label">Design force</div></div>
+          <div class="hstat-divider" aria-hidden="true"></div>
+          <div class="hstat"><div class="hstat-val" id="hs-pressure">—</div><div class="hstat-label">Break-out pressure</div></div>
+          <div class="hstat-divider" aria-hidden="true"></div>
+          <div class="hstat"><div class="hstat-val" id="hs-flow">—</div><div class="hstat-label">Extraction flow</div></div>
+        </div>
+        <div class="hero-assumptions">
+          <span>Eff. 0.85</span><span>·</span><span>ρ<sub>steel</sub> 7,850 kg/m³</span><span>·</span><span>4-hr extraction target</span>
+        </div>
+        <a href="#calculator" class="hero-btn">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 5h10M3 8h7M3 11h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          Start calculating
+        </a>
+      </div>
+      <div class="hero-diagram" aria-hidden="true">
+        <canvas id="hero-canvas" width="220" height="500"></canvas>
+      </div>
+    </div>
+    <div class="hero-scroll-hint" aria-hidden="true">
+      <span>scroll to calculator</span>
+      <svg width="12" height="16" viewBox="0 0 12 16" fill="none"><path d="M6 2v10M2 10l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </div>
+  </section>
+
+  <section class="calc-section" id="calculator">
+    <div class="calc-header">
+      <div class="calc-header-top">
+        <div>
+          <h2 class="calc-title">Calculator</h2>
+          <p class="calc-subtitle">Adjust pile geometry and soil conditions, then hit Calculate.</p>
+        </div>
+        <div class="tab-bar">
+          <button class="tab-btn active" id="tab-calc-btn" data-tab="calculator">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><rect x="1" y="1" width="12" height="12" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 4h2M4 7h6M4 10h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            Calculator
+          </button>
+          <button class="tab-btn" id="tab-report-btn" data-tab="report">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2 2h7l3 3v7a1 1 0 01-1 1H2a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.3"/><path d="M9 2v3h3M4 6h6M4 8.5h6M4 11h4" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+            Export Report
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="tab-panel-calculator">
+    <div class="main-layout">
+
+      <aside class="inputs-panel">
+
+        <section class="input-section">
+          <h3 class="section-label">Pile geometry</h3>
+          <div class="field-group">
+            <label for="dBase">Base diameter <span class="unit">m</span></label>
+            <div class="slider-row"><input type="range" id="dBase" min="4" max="12" step="0.25" value="6"><output id="dBase-v" class="mono">6.00 m</output></div>
+          </div>
+          <div class="field-group">
+            <label for="dTop">Upper diameter <span class="unit">m</span></label>
+            <div class="slider-row"><input type="range" id="dTop" min="3" max="10" step="0.25" value="5"><output id="dTop-v" class="mono">5.00 m</output></div>
+          </div>
+          <div class="field-group">
+            <label for="wt">Avg wall thickness <span class="unit">mm</span></label>
+            <div class="slider-row"><input type="range" id="wt" min="40" max="120" step="5" value="75"><output id="wt-v" class="mono">75 mm</output></div>
+          </div>
+          <div class="field-group">
+            <label for="plen">Total pile length <span class="unit">m</span></label>
+            <div class="slider-row"><input type="range" id="plen" min="30" max="130" step="1" value="56"><output id="plen-v" class="mono">56 m</output></div>
+          </div>
+          <div class="field-group">
+            <label for="taperStart">Taper start from base <span class="unit">m</span></label>
+            <div class="slider-row"><input type="range" id="taperStart" min="5" max="110" step="1" value="42"><output id="taperStart-v" class="mono">42 m</output></div>
+          </div>
+          <div class="field-group">
+            <label for="taperLen">Taper length <span class="unit">m</span></label>
+            <div class="slider-row"><input type="range" id="taperLen" min="2" max="30" step="1" value="9"><output id="taperLen-v" class="mono">9 m</output></div>
+          </div>
+          <div class="field-group">
+            <label for="emb">Embedment depth <span class="unit">m</span><span class="field-note">within lower straight section</span></label>
+            <div class="slider-row"><input type="range" id="emb" min="10" max="60" step="1" value="30"><output id="emb-v" class="mono">30 m</output></div>
+          </div>
+          <div class="geom-summary" id="geom-summary"></div>
+        </section>
+
+        <section class="input-section">
+          <h3 class="section-label">Soil &amp; loading</h3>
+          <div class="field-group">
+            <label for="soil">Skin friction scenario</label>
+            <select id="soil">
+              <option value="50">Favourable — soft/loose (50 kPa)</option>
+              <option value="100" selected>Moderate — medium dense (100 kPa)</option>
+              <option value="150">Difficult — dense/stiff (150 kPa)</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+          <div class="field-group" id="custom-field" style="display:none;">
+            <label for="usf">Custom avg unit skin friction <span class="unit">kPa</span></label>
+            <div class="slider-row"><input type="range" id="usf" min="20" max="250" step="5" value="100"><output id="usf-v" class="mono">100 kPa</output></div>
+          </div>
+          <div class="field-group">
+            <label for="fos">Factor of safety <span class="field-note">× applied to total force incl. tip suction</span></label>
+            <div class="slider-row"><input type="range" id="fos" min="1" max="3" step="0.1" value="1.5"><output id="fos-v" class="mono">1.5</output></div>
+            <div class="fos-indicator" id="fos-indicator"></div>
+          </div>
+          <div class="assumptions-block">
+            <p><strong>Fixed:</strong> Hydraulic efficiency 0.85 · Steel 7,850 kg/m³ · 4-hr extraction target</p>
+          </div>
+        </section>
+
+        <section class="input-section tip-inputs">
+          <h3 class="section-label">Tip suction</h3>
+          <p class="limits-intro">Negative pore pressure at pile tip adds to extraction resistance. Soil type governs whether the pile behaves as plugged (clay — full inner area) or unplugged (sand — steel annulus only).</p>
+          <div class="field-group">
+            <label for="tip-soil-type">Soil type at pile tip</label>
+            <select id="tip-soil-type">
+              <option value="clay" selected>Clay — plugged, undrained suction</option>
+              <option value="sand">Sand — unplugged, reverse end bearing</option>
+              <option value="none">Ignore tip suction</option>
+            </select>
+          </div>
+          <div id="tip-clay-fields">
+            <div class="field-group">
+              <label for="su-tip">Undrained shear strength S<sub>u</sub> at tip <span class="unit">kPa</span><span class="field-note">representative value at pile tip depth</span></label>
+              <div class="slider-row"><input type="range" id="su-tip" min="10" max="300" step="5" value="75"><output id="su-tip-v" class="mono">75 kPa</output></div>
+            </div>
+          </div>
+          <div id="tip-sand-fields" style="display:none;">
+            <div class="field-group">
+              <label for="nq-tip">Reverse bearing factor N<sub>q</sub><span class="field-note">extraction Nq, typically 5–12 for dense sand</span></label>
+              <div class="slider-row"><input type="range" id="nq-tip" min="2" max="20" step="1" value="8"><output id="nq-tip-v" class="mono">8</output></div>
+            </div>
+            <div class="field-group">
+              <label for="gamma-sub">Submerged soil unit weight <span class="unit">kN/m³</span></label>
+              <div class="slider-row"><input type="range" id="gamma-sub" min="7" max="13" step="0.5" value="9.0"><output id="gamma-sub-v" class="mono">9.0 kN/m³</output></div>
+            </div>
+          </div>
+          <div class="tip-note" id="tip-note"></div>
+        </section>
+
+        <section class="input-section">
+          <h3 class="section-label">Pump equipment limits</h3>
+          <p class="limits-intro">Set rated capacity of selected pump units. Feasibility gauges show how each calculated requirement compares.</p>
+          <div class="field-group">
+            <label for="lim-pressure">Triplex plunger — max pressure <span class="unit">bar</span><span class="field-note">Phase 1 break-out limit per unit</span></label>
+            <div class="slider-row"><input type="range" id="lim-pressure" min="20" max="400" step="5" value="50"><output id="lim-pressure-v" class="mono">50 bar</output></div>
+          </div>
+          <div class="field-group">
+            <label for="lim-flow">Centrifugal seawater — max flow <span class="unit">L/s</span><span class="field-note">Phase 2 extraction limit per unit</span></label>
+            <div class="slider-row"><input type="range" id="lim-flow" min="100" max="1200" step="25" value="600"><output id="lim-flow-v" class="mono">600 L/s</output></div>
+          </div>
+          <div class="limits-note">Defaults reflect typical single-unit North Sea pump rental market ratings.</div>
+        </section>
+
+        <section class="input-section seal-inputs">
+          <h3 class="section-label">Base seal geometry</h3>
+          <p class="limits-intro">Domed inflatable diaphragm seated at seabed level inside pile. Dome geometry drives self-energising radial lip force.</p>
+          <div class="field-group">
+            <label for="dome-ratio">Dome height / inner radius ratio<span class="field-note">shape of spherical cap dome</span></label>
+            <div class="slider-row"><input type="range" id="dome-ratio" min="0.15" max="0.80" step="0.05" value="0.35"><output id="dome-ratio-v" class="mono">0.35</output></div>
+          </div>
+          <div class="field-group">
+            <label for="lip-width">Edge lip contact width <span class="unit">mm</span><span class="field-note">rubber lip bearing on pile inner wall</span></label>
+            <div class="slider-row"><input type="range" id="lip-width" min="50" max="400" step="10" value="150"><output id="lip-width-v" class="mono">150 mm</output></div>
+          </div>
+          <div class="assumptions-block">
+            <p><strong>Fixed:</strong> Inflation pressure 1.5 bar · Spherical cap dome geometry · Seawater density 1,025 kg/m³</p>
+          </div>
+        </section>
+
+        <button class="calc-btn" id="calc-btn" type="button">
+          <span class="calc-btn-icon" aria-hidden="true">
+            <svg id="btn-icon-calc" width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="2" y="2" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M5 5h3M5 9h8M5 13h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <svg id="btn-icon-spin" width="18" height="18" viewBox="0 0 18 18" fill="none" style="display:none"><circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5" stroke-dasharray="22 22" stroke-linecap="round"/></svg>
+            <svg id="btn-icon-done" width="18" height="18" viewBox="0 0 18 18" fill="none" style="display:none"><circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M5.5 9l2.5 2.5 4.5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </span>
+          <span id="calc-btn-label">Calculate</span>
+        </button>
+        <div class="calc-btn-note" id="calc-btn-note">Settings changed — recalculate to update results</div>
+
+      </aside>
+
+      <div class="results-panel">
+        <div class="pile-and-metrics">
+          <div class="pile-diagram-wrap">
+            <canvas id="pile-canvas" width="200" height="500" aria-label="Scaled cross-section of monopile showing zones and embedment"></canvas>
+          </div>
+          <div class="metrics-column">
+            <div class="metrics-grid" id="metrics-grid"></div>
+            <div id="phase-blocks"></div>
+            <div id="feasibility-block"></div>
+          </div>
+        </div>
+        <div id="seal-analysis"></div>
+      </div>
+
+    </div>
+    </div><!-- end tab-panel-calculator -->
+
+    <!-- ── REPORT PANEL ── -->
+    <div id="tab-panel-report" style="display:none">
+      <div class="report-toolbar">
+        <div class="report-toolbar-left">
+          <span class="report-stale" id="report-stale" style="display:none">⚠ Run the calculator first to generate a current report</span>
+          <span class="report-ready" id="report-ready" style="display:none">✓ Report reflects current calculation</span>
+        </div>
+        <button class="print-btn" onclick="window.print()">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 5V2h8v3M4 11H2V7a1 1 0 011-1h10a1 1 0 011 1v4h-2M4 9h8v5H4V9z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Print / Save as PDF
+        </button>
+      </div>
+      <div class="report-hint">In the browser print dialog, set <strong>Destination → Save as PDF</strong> and <strong>Paper → A4</strong>. Disable headers &amp; footers for a clean output.</div>
+      <div class="report-content" id="report-content">
+        <div class="report-placeholder">Run a calculation first, then switch to this tab to generate the report.</div>
+      </div>
+    </div>
+
+  </section>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <span><strong>AquaHERO</strong> — Aqua Hydraulic Extraction &amp; Recovery Operation &nbsp;·&nbsp; Offshore Monopile Hydraulic Extraction Calculator</span>
+      <span class="footer-note">Engineering guidance only. All outputs require independent verification before use in design or operations.</span>
+    </div>
+  </footer>
+
+  <script src="src/calc.js"></script>
+</body>
+</html>
