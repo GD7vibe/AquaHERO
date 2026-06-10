@@ -411,3 +411,29 @@ select:focus { border-color: var(--sky-mid); }
   .hstat-divider { width: 40px; height: 1px; }
   .metrics-grid { grid-template-columns: 1fr 1fr; }
 }
+/* AUDIT FIX 5 (CSS half) — gauge bar fidelity.
+   The fill and over-limit segments are flex children; default flex-shrink:1
+   let them compress when their combined width exceeded 100%, rendering an
+   over-limit bar as if it were UNDER the limit (fill shrank to ~83%).
+   flex-shrink:0 pins each segment at its stated width; the track's
+   overflow:hidden clips cleanly at the right edge. */
+.feas-bar-fill,
+.feas-bar-over,
+.seal-bar-fill,
+.seal-bar-over { flex-shrink: 0; }
+ 
+/* AUDIT FIX 3 — input validation error box (element injected by calc.js) */
+.input-errors {
+  background: rgba(220,38,38,0.1);
+  border: 1px solid rgba(220,38,38,0.4);
+  border-left: 3px solid #ef4444;
+  border-radius: var(--r-lg);
+  padding: 0.75rem 0.9rem;
+  font-size: 0.75rem;
+  color: #fca5a5;
+  line-height: 1.55;
+}
+.input-errors strong { color: #f87171; display: block; margin-bottom: 0.35rem; }
+.input-error-row { padding: 0.2rem 0; }
+.input-error-row + .input-error-row { border-top: 1px solid rgba(220,38,38,0.15); }
+ 
