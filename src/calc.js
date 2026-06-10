@@ -7,6 +7,12 @@ const G          = 9.81;
 const HYD_EFF    = 0.85;
 const P_INFLATE  = 1.5;   // bar — fixed seal inflation pressure
 
+// AUDIT FIX 6 — documented Phase 1 / Phase 2 model constants
+const K_WATER          = 2.2e9; // Pa — bulk modulus of seawater
+const T_PRESSURISE_S   = 600;   // s — assumed Phase 1 pressurisation ramp (10 min)
+const LEAK_FRACTION    = 0.05;  // — seal/fitting leakage allowance as fraction of Phase 2 flow
+const RESID_FRICTION   = 0.30;  // — residual (remoulded) skin friction as fraction of peak, post-breakout
+
 const el = id => document.getElementById(id);
 
 // ── Geometry helpers ───────────────────────────────────────────────────────
@@ -32,7 +38,8 @@ function getInputs() {
   const soilSel    = el('soil').value;
   const usf_kPa    = soilSel === 'custom' ? parseFloat(el('usf').value) : parseFloat(soilSel);
   const fos        = parseFloat(el('fos').value);
-  const upperLen   = Math.max(plen - taperStart - taperLen, 0.5);
+  // AUDIT FIX 3 — no silent 0.5 m clamp; validation enforces taperStart+taperLen ≤ plen
+  const upperLen   = Math.max(plen - taperStart - taperLen, 0);
 
   const tipType    = el('tip-soil-type').value;
   const su_tip     = parseFloat(el('su-tip').value);
@@ -41,6 +48,45 @@ function getInputs() {
 
   return { dBase, dTop, wt_m, plen, taperStart, taperLen, upperLen, emb,
            usf_kPa, fos, tipType, su_tip, nq_tip, gamma_sub };
+}
+
+// ── Input validation ───────────────────────────────────────────────────────
+// AUDIT FIX 3 — geometric consistency enforced before any calculation.
+// Returns an array of error strings; empty array = valid.
+function validateInputs(inp) {
+  const errors = [];
+  if (inp.taperStart + inp.taperLen > inp.plen) {
+    errors.push(
+      `Taper start (${inp.taperStart} m) + taper length (${inp.taperLen} m) = ` +
+      `${inp.taperStart + inp.taperLen} m exceeds total pile length (${inp.plen} m). ` +
+      `Reduce taper start or taper length, or increase pile length.`);
+  }
+  if (inp.emb > inp.taperStart) {
+    errors.push(
+      `Embedment (${inp.emb} m) exceeds the lower straight section (${inp.taperStart} m). ` +
+      `Embedment must lie entirely within the lower straight section — ` +
+      `reduce embedment or move the taper start higher.`);
+  }
+  return errors;
+}
+
+function renderInputErrors(errors) {
+  let box = el('input-errors');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'input-errors';
+    box.className = 'input-errors';
+    const btn = el('calc-btn');
+    btn.parentNode.insertBefore(box, btn);
+  }
+  if (errors.length === 0) {
+    box.style.display = 'none';
+    box.innerHTML = '';
+  } else {
+    box.style.display = '';
+    box.innerHTML = '<strong>Invalid geometry — calculation blocked:</strong>' +
+      errors.map(e => `<div class="input-error-row">✗ ${e}</div>`).join('');
+  }
 }
 
 // ── Tip suction calculation ────────────────────────────────────────────────
@@ -86,19 +132,22 @@ function calculate(inp) {
                  + ringArea(dMid,  wt_m) * taperLen
                  + ringArea(dTop,  wt_m) * upperLen;
 
-  const totalVol = outerArea(dBase) * taperStart
-                 + outerArea(dMid)  * taperLen
-                 + outerArea(dTop)  * upperLen;
-
-  // Embedment always within lower straight section
+  // Embedment always within lower straight section (enforced by validateInputs)
   const skinFriction_N = usf_kPa * 1000 * (Math.PI * dBase) * emb;
   const pileWeight_N   = steelVol * RHO_STEEL * G;
-  const buoyancy_N     = totalVol * RHO_WATER * G;
+
+  // AUDIT FIX 1 — buoyancy acts on the STEEL volume only.
+  // The pile is a flooded tube: internal water is part of the pressurised system
+  // already represented by P × A_internal. Deducting full-envelope displacement
+  // double-counted hydrostatics and understated required force ~18% at defaults.
+  // Net submerged steel weight = steelVol × (ρ_steel − ρ_water) × g.
+  const buoyancy_N     = steelVol * RHO_WATER * G;
+  const submergedWeight_N = pileWeight_N - buoyancy_N;
 
   // Tip suction
   const ts = calculateTipSuction(inp);
 
-  const baseForce_N   = skinFriction_N + pileWeight_N - buoyancy_N + ts.tipForce_N;
+  const baseForce_N   = skinFriction_N + submergedWeight_N + ts.tipForce_N;
   const designForce_N = baseForce_N * fos;
   const hydForce_N    = designForce_N / HYD_EFF;
 
@@ -107,18 +156,34 @@ function calculate(inp) {
 
   const vel_ms                 = emb / (4 * 3600);
   const extractionFlow_Ls      = iAreaBase * vel_ms * 1000;
-  const breakoutFlow_Ls        = extractionFlow_Ls * 0.12;
-  const extractionPressure_bar = 1.5 + (RHO_WATER * G * emb) / 1e5;
+
+  // AUDIT FIX 6a — Phase 1 flow: compressibility make-up of the sealed water
+  // column (seal at seabed → top cap, length = plen − emb) over the
+  // pressurisation ramp, plus a leakage allowance. Replaces the former
+  // undocumented "12% of extraction flow" constant.
+  const colVol_m3       = iAreaBase * Math.max(plen - emb, 0);
+  const breakoutP_Pa    = breakoutPressure_bar * 1e5;
+  const breakoutFlow_Ls = (colVol_m3 * breakoutP_Pa / K_WATER) / T_PRESSURISE_S * 1000
+                        + LEAK_FRACTION * extractionFlow_Ls;
+
+  // AUDIT FIX 6b — Phase 2 working pressure derived from the post-breakout
+  // force balance: submerged self-weight + residual (remoulded) skin friction
+  // at RESID_FRICTION × peak, tip suction taken as broken by Phase 1.
+  // Unfactored working estimate; excludes line losses — verify with supplier.
+  const extractionPressure_bar =
+    ((submergedWeight_N + RESID_FRICTION * skinFriction_N) / HYD_EFF / iAreaBase) / 1e5;
 
   return {
     skinFriction_N,
     skinFriction_MN: skinFriction_N / 1e6,
     pileWeight_kN:   pileWeight_N / 1000,
     buoyancy_kN:     buoyancy_N / 1000,
+    submergedWeight_MN: submergedWeight_N / 1e6,
     tipSuction_kN:   ts.tipForce_kN,
     tipSuction_t:    ts.tipForce_t,
     tipSuction_pct:  baseForce_N > 0 ? (ts.tipForce_N / baseForce_N) * 100 : 0,
     ts,
+    baseForce_MN:    baseForce_N / 1e6,        // AUDIT FIX 7.4 — unfactored total from components
     designForce_kN:  designForce_N / 1000,
     designForce_t:   designForce_N / (G * 1000),
     hydForce_kN:     hydForce_N / 1000,
@@ -134,9 +199,18 @@ function calculate(inp) {
 }
 
 // ── Seal analysis calculation ──────────────────────────────────────────────
-// Physics: for a thin spherical cap membrane under differential pressure ΔP,
-// the horizontal (radial outward) membrane force per unit rim length = ΔP × r_inner / 2
-// This drives the self-energising lip contact force against the pile inner wall.
+// AUDIT FIX 4 — pressure-energised seal model.
+// The former membrane-tension derivation (T = ΔP·R/2 resolved at the rim) was
+// removed: (a) it resolved the VERTICAL component (T·sinθ = ΔP·r/2 — check:
+// × 2πr = ΔP·πr², the total pressure resultant) and labelled it radial;
+// (b) a convex-up dome loaded from above is in membrane COMPRESSION, so the
+// tension model does not apply.
+// Physical mechanism implemented instead: the inflated dome is squeezed
+// between the applied water pressure above and the soil plug below. Its
+// internal pressure tracks the applied pressure, pressing the lip against the
+// pile inner wall with contact pressure ≈ P_applied + P_inflate. Contact
+// therefore always exceeds the sealed pressure — the standard sealing
+// criterion for a pressure-energised seal is met at any applied pressure.
 function calculateSeal(inp, r) {
   const dInner    = inp.dBase - 2 * inp.wt_m;
   const rInner    = dInner / 2;
@@ -145,72 +219,65 @@ function calculateSeal(inp, r) {
   const domeRatio  = parseFloat(el('dome-ratio').value);
   const lipWidth_m = parseFloat(el('lip-width').value) / 1000;
 
-  // Dome geometry — spherical cap
+  // Dome geometry — spherical cap (informational, for bag design)
   const domeH    = domeRatio * rInner;
   const R_sphere = (rInner * rInner + domeH * domeH) / (2 * domeH);
-  const rimAngle_deg = Math.asin(rInner / R_sphere) * (180 / Math.PI);
+  const rimAngle_deg = Math.asin(Math.min(rInner / R_sphere, 1)) * (180 / Math.PI);
 
-  // Pressure differential across dome
+  // Applied gauge pressure at the seal
   const P_applied = r.breakoutPressure_bar;
-  const dP_bar    = Math.max(P_applied - P_INFLATE, 0);
-  const dP_Pa     = dP_bar * 1e5;
 
-  // Downward thrust — seabed must resist P_applied acting on the full inner area
+  // Downward thrust — seabed/plug resists P_applied acting on the full inner area
   const downThrust_MN = (P_applied * 1e5 * iArea) / 1e6;
   const downThrust_t  = (downThrust_MN * 1e6) / (G * 1000);
 
-  // Seabed bearing pressure increase (above ambient) from seal loading
-  // = applied overpressure (the ambient hydrostatic is already in the soil's effective stress)
-  const seabedBearing_kPa = dP_bar * 100;
+  // AUDIT FIX 5.4 (minor) — net bearing increase on the plug = applied gauge
+  // pressure (inflation pressure is internal to the bag, not transmitted net)
+  const seabedBearing_kPa = P_applied * 100;
 
-  // Self-energising radial force per unit rim circumference length
-  // Derivation: membrane tension at rim = ΔP × R_sphere / 2
-  // Horizontal component = tension × sin(rimAngle) = (ΔP × R_sphere / 2) × (r_inner / R_sphere) = ΔP × r_inner / 2
-  const radialFPL_kNm = (dP_Pa * rInner / 2) / 1000;  // kN per metre of rim
+  // Lip contact pressure — pressure-energised: bag internal ≈ applied + inflation
+  const lipContact_bar = P_applied + P_INFLATE;
+  const lipContact_MPa = lipContact_bar / 10;
+  const sealMargin_bar = lipContact_bar - P_applied;   // always = P_INFLATE > 0
 
-  // Total radial force around the full circumference
+  // Radial line load on the pile wall = contact pressure × lip contact width
+  const radialFPL_kNm  = (lipContact_bar * 1e5 * lipWidth_m) / 1000;  // kN per metre of rim
   const totalRadial_MN = (radialFPL_kNm * 2 * Math.PI * rInner) / 1000;
 
-  // Lip contact pressure — radial force distributed over lip contact width
-  const lipContact_MPa = (radialFPL_kNm * 1000) / (lipWidth_m * 1e6);
-  const lipContact_bar = lipContact_MPa * 10;
-
   // Extrusion risk assessment
-  // Reinforced elastomer with backup rings: ~200–400 bar contact capability
-  // Plain rubber without backup rings: ~10–20 bar
-  // Use 300 bar as the "with rings" design limit
-  const extrusionPct = Math.min((lipContact_bar / 300) * 100, 130);
+  // Reinforced elastomer with anti-extrusion backup rings: ~200–400 bar contact
+  // capability; plain rubber ~10–20 bar. 300 bar used as "with rings" design limit.
+  // AUDIT FIX 5 — percentage no longer capped; only the bar fill is capped in gaugeBar()
+  const extrusionPct = (lipContact_bar / 300) * 100;
   const extrusionCls  = extrusionPct >= 100 ? 'high' : extrusionPct >= 50 ? 'moderate' : 'low';
   const extrusionMsg  = extrusionPct >= 100 ? 'Bespoke high-pressure elastomer specification required'
                       : extrusionPct >= 50  ? 'Anti-extrusion backup rings essential'
                       : 'Manageable with standard backup ring arrangement';
 
   // Hydraulic fracturing at pile tip
-  // Fracturing threshold ≈ K0 × γ_sub_soil × emb (effective horizontal stress at tip depth)
-  // K0 = 0.45 (normally consolidated marine sediment — conservative)
-  // γ_sub = 9 kN/m³ typical submerged unit weight
-  // Fracturing is BENEFICIAL — breaks negative pore pressure (tip suction), conditions soil.
-  // The confined soil plug inside the pile will NOT fail in bearing — it compacts and resists
-  // under full lateral confinement from the pile wall. Classical bearing capacity failure
-  // geometry (lateral shear wedge) cannot form inside a steel tube.
+  // Threshold ≈ K0 × γ' × emb (effective horizontal stress at tip depth).
+  // Fracturing is BENEFICIAL — breaks negative pore pressure (tip suction).
+  // AUDIT FIX 7 — γ' taken from the user's tip input when sand is selected;
+  // 9 kN/m³ retained as the typical marine-sediment default otherwise.
   const K0            = 0.45;
-  const gammaSub      = 9000;   // N/m³
-  const sigmaH_Pa     = K0 * gammaSub * inp.emb;
+  const gammaSub_Nm3  = inp.tipType === 'sand' ? inp.gamma_sub * 1000 : 9000;
+  const sigmaH_Pa     = K0 * gammaSub_Nm3 * inp.emb;
   const fractureThreshold_bar = sigmaH_Pa / 1e5;
-  const fractureRatio = fractureThreshold_bar > 0 ? dP_bar / fractureThreshold_bar : 0;
+  const fractureRatio = fractureThreshold_bar > 0 ? P_applied / fractureThreshold_bar : 0;
   const fracturingActive = fractureRatio >= 1.0;
-  // Bar display: scale so threshold = 20% of bar, for clear visual headroom above
+  // Bar display: scale so threshold = 20% of bar (bar fill only; numeric ratio shown uncapped)
   const fracturePct   = Math.min((fractureRatio / 5) * 100, 100);
 
   return {
     dInner, rInner, domeH, R_sphere, rimAngle_deg,
-    P_applied, dP_bar,
+    P_applied,
     downThrust_MN, downThrust_t,
     seabedBearing_kPa,
+    lipContact_bar, lipContact_MPa, sealMargin_bar,
     radialFPL_kNm, totalRadial_MN,
-    lipContact_bar, lipContact_MPa,
     extrusionPct, extrusionCls, extrusionMsg,
     fractureThreshold_bar, fractureRatio, fracturingActive, fracturePct,
+    gammaSub_kNm3: gammaSub_Nm3 / 1000,
     domeRatio, lipWidth_m,
   };
 }
@@ -228,7 +295,6 @@ function drawSealSVG(s) {
   // Sphere radius for arc
   const rx = (pileX_R - pileX_L) / 2;
   const rSph_px = (rx * rx + domeH_px * domeH_px) / (2 * domeH_px);
-  const arcCy = domeBaseY - (rSph_px - domeH_px);
 
   // Seabed hatch
   let hatchLines = '';
@@ -438,6 +504,15 @@ function setButtonState(state) {
 function markDirty() { _dirty = true; setButtonState('dirty'); }
 
 function runCalculation() {
+  // AUDIT FIX 3 — validate before calculating; block and explain if invalid
+  const inp    = getInputs();
+  const errors = validateInputs(inp);
+  renderInputErrors(errors);
+  if (errors.length > 0) {
+    setButtonState('dirty');
+    return;
+  }
+
   setButtonState('spinning');
   _dirty = false;
   // If on report tab, switch back to calculator to show results
@@ -445,8 +520,14 @@ function runCalculation() {
     el('tab-calc-btn').click();
   }
   setTimeout(() => {
-    const inp = getInputs();
-    const r   = calculate(inp);
+    const r = calculate(inp);
+    // AUDIT FIX 8.4 — defensive sanity guard (unreachable with corrected
+    // buoyancy since ρ_steel > ρ_water, but protects against future edits)
+    if (!isFinite(r.designForce_kN) || r.designForce_kN <= 0) {
+      renderInputErrors(['Computed extraction force is non-physical (≤ 0 or non-finite). Check inputs.']);
+      setButtonState('dirty');
+      return;
+    }
     _lastResult = { inp, r };
     renderResults(inp, r);
     setButtonState('done');
@@ -454,6 +535,7 @@ function runCalculation() {
 }
 
 // ── Helper: gauge bar HTML ─────────────────────────────────────────────────
+// AUDIT FIX 5 — bars cap the FILL visually; numeric percentages are never capped.
 function gaugeBar(pct, colour, extraClass) {
   const fill = Math.min(pct, 100);
   const over = pct > 100 ? Math.min(pct - 100, 20) : 0;
@@ -476,7 +558,7 @@ function overUnder(val, limit, unit) {
 
 // ── Render results ─────────────────────────────────────────────────────────
 function renderResults(inp, r) {
-  // Geometry summary
+  // Geometry summary (only rendered for validated geometry — claim is now always true)
   el('geom-summary').innerHTML =
     `<strong>${inp.taperStart}m</strong> lower (⌀${inp.dBase.toFixed(2)}m) + ` +
     `<strong>${inp.taperLen}m</strong> taper + ` +
@@ -492,8 +574,8 @@ function renderResults(inp, r) {
   const hc = el('hero-canvas');
   if (hc) drawPileOnCanvas(hc, inp, { padTop:40, padBottom:30, padLeft:10, padRight:80 });
 
-  // Hero stats
-  el('hs-force').textContent    = r.designForce_kN.toFixed(0) + ' kN';
+  // Hero stats (AUDIT FIX 7.4 — thousands separators)
+  el('hs-force').textContent    = Math.round(r.designForce_kN).toLocaleString('en-GB') + ' kN';
   el('hs-pressure').textContent = r.breakoutPressure_bar.toFixed(1) + ' bar';
   el('hs-flow').textContent     = r.extractionFlow_Ls.toFixed(0) + ' L/s';
 
@@ -502,44 +584,45 @@ function renderResults(inp, r) {
   const fC = r.extractionFlow_Ls > 500 ? 'warn' : 'ok';
   const tsCls = r.tipSuction_kN > 0 ? (r.tipSuction_pct > 30 ? 'warn' : '') : '';
   el('metrics-grid').innerHTML = [
-    { label:'Design extraction force', val:r.designForce_kN.toFixed(0)+' kN', val2:r.designForce_t.toFixed(0)+' t', cls:'info highlight' },
+    { label:'Design extraction force', val:Math.round(r.designForce_kN).toLocaleString('en-GB')+' kN', val2:Math.round(r.designForce_t).toLocaleString('en-GB')+' t', cls:'info highlight' },
     { label:'Pile steel mass',         val:r.pileMass_t.toFixed(0)+' t',       val2:'', cls:'' },
     { label:'Break-out pressure',      val:r.breakoutPressure_bar.toFixed(1)+' bar', val2:'', cls:pC },
     { label:'Extraction flow rate',    val:r.extractionFlow_Ls.toFixed(0)+' L/s', val2:'', cls:fC },
     { label:'Skin friction',           val:r.skinFriction_MN.toFixed(2)+' MN', val2:'', cls:'' },
-    { label:'Tip suction force',       val: r.tipSuction_kN > 0 ? r.tipSuction_kN.toFixed(0)+' kN' : '—', val2: r.tipSuction_kN > 0 ? r.tipSuction_t.toFixed(0)+' t  ('+r.tipSuction_pct.toFixed(0)+'% of total)' : 'not included', cls: tsCls },
+    { label:'Tip suction force',       val: r.tipSuction_kN > 0 ? Math.round(r.tipSuction_kN).toLocaleString('en-GB')+' kN' : '—', val2: r.tipSuction_kN > 0 ? Math.round(r.tipSuction_t).toLocaleString('en-GB')+' t  ('+r.tipSuction_pct.toFixed(0)+'% of total)' : 'not included', cls: tsCls },
     { label:'Extraction velocity',     val:r.vel_mms.toFixed(3)+' mm/s', val2:'4-hr target', cls:'' },
   ].map(m => `<div class="metric-card ${m.cls}"><div class="mc-label">${m.label}</div><div class="mc-val">${m.val}</div>${m.val2?`<div class="mc-val2">${m.val2}</div>`:''}</div>`).join('');
 
-  // Force breakdown panel
+  // Force breakdown panel (AUDIT FIX 1 — buoyancy on steel displacement;
+  // AUDIT FIX 7.4 — unfactored total from components, not designForce/fos)
   const fbHtml = `
     <div class="phase-block">
       <div class="phase-title">Force breakdown — breakout</div>
       <div class="phase-sub">Component forces before factor of safety and hydraulic efficiency</div>
       <div class="phase-row"><span>Skin friction (${inp.usf_kPa} kPa × ${(Math.PI*inp.dBase).toFixed(2)}m perimeter × ${inp.emb}m)</span><span class="pval">+${r.skinFriction_MN.toFixed(2)} MN</span></div>
       <div class="phase-row"><span>Pile self-weight</span><span class="pval">+${(r.pileWeight_kN/1000).toFixed(2)} MN</span></div>
-      <div class="phase-row"><span>Buoyancy (upward — deducted)</span><span class="pval">−${(r.buoyancy_kN/1000).toFixed(2)} MN</span></div>
+      <div class="phase-row"><span>Buoyancy of steel displacement (upward — deducted)</span><span class="pval">−${(r.buoyancy_kN/1000).toFixed(2)} MN</span></div>
       ${r.tipSuction_kN > 0 ? `<div class="phase-row" style="color:#fdba74"><span>Tip suction — ${inp.tipType === 'clay' ? 'clay plugged (N_c=9)' : 'sand unplugged (N_q='+inp.nq_tip+')'}</span><span class="pval" style="color:#fdba74">+${(r.tipSuction_kN/1000).toFixed(2)} MN</span></div>` : ''}
-      <div class="phase-row" style="border-top:1px solid rgba(255,255,255,0.15);margin-top:4px;padding-top:6px;font-weight:500;color:var(--white)"><span>Total (unfactored)</span><span class="pval">${((r.designForce_kN/inp.fos)/1000).toFixed(2)} MN</span></div>
+      <div class="phase-row" style="border-top:1px solid rgba(255,255,255,0.15);margin-top:4px;padding-top:6px;font-weight:500;color:var(--white)"><span>Total (unfactored)</span><span class="pval">${r.baseForce_MN.toFixed(2)} MN</span></div>
       <div class="phase-row" style="color:var(--sky-light)"><span>× FoS ${inp.fos.toFixed(1)} × efficiency (÷${HYD_EFF}) = hydraulic requirement</span><span class="pval" style="color:var(--sky-light)">${(r.hydForce_kN/1000).toFixed(2)} MN</span></div>
     </div>`;
 
   // Tip note in inputs panel
   if (inp.tipType !== 'none') {
-    el('tip-note').innerHTML = `<strong>Tip suction ${r.tipSuction_kN.toFixed(0)} kN (${r.tipSuction_t.toFixed(0)} t)</strong> — ${r.tipSuction_pct.toFixed(0)}% of total unfactored extraction force. ${r.tipSuction_pct > 25 ? 'Dominant load component — Phase 1 hydraulic pre-conditioning is critical.' : 'Significant but not dominant. Phase 1 pulse will address.'}`;
+    el('tip-note').innerHTML = `<strong>Tip suction ${Math.round(r.tipSuction_kN).toLocaleString('en-GB')} kN (${Math.round(r.tipSuction_t).toLocaleString('en-GB')} t)</strong> — ${r.tipSuction_pct.toFixed(0)}% of total unfactored extraction force. ${r.tipSuction_pct > 25 ? 'Dominant load component — Phase 1 hydraulic pre-conditioning is critical.' : 'Significant but not dominant. Phase 1 pulse will address.'}`;
     el('tip-note').style.display = '';
   } else {
     el('tip-note').innerHTML = 'Tip suction not included — result is a lower-bound estimate. Consider activating for maximum potential load.';
     el('tip-note').style.display = '';
   }
 
-  // Phase blocks
+  // Phase blocks (AUDIT FIX 6 — documented flow/pressure bases; FIX 8 — 8-hr window)
   el('phase-blocks').innerHTML = fbHtml + `
     <div class="phase-block">
       <div class="phase-title">Phase 1 — break-out</div>
       <div class="phase-sub">High-pressure pulse to shear soil skin friction and initiate pile movement</div>
       <div class="phase-row"><span>Required pressure (FoS ${inp.fos.toFixed(1)}×)</span><span class="pval">${r.breakoutPressure_bar.toFixed(1)} bar</span></div>
-      <div class="phase-row"><span>Flow during break-out</span><span class="pval">${r.breakoutFlow_Ls.toFixed(0)} L/s</span></div>
+      <div class="phase-row"><span>Flow during break-out (compressibility make-up + ${(LEAK_FRACTION*100).toFixed(0)}% leakage)</span><span class="pval">${r.breakoutFlow_Ls.toFixed(1)} L/s</span></div>
       <div class="phase-row"><span>Hydraulic force required</span><span class="pval">${(r.hydForce_kN/1000).toFixed(2)} MN</span></div>
       <span class="pump-tag triplex">✓ Triplex plunger pump — high pressure</span>
     </div>
@@ -547,17 +630,18 @@ function renderResults(inp, r) {
       <div class="phase-title">Phase 2 — extraction</div>
       <div class="phase-sub">High-volume flow to sustain 4-hour extraction; valve manifold switches pump class after break-out</div>
       <div class="phase-row"><span>Required flow rate</span><span class="pval">${r.extractionFlow_Ls.toFixed(0)} L/s</span></div>
-      <div class="phase-row"><span>Working pressure</span><span class="pval">${r.extractionPressure_bar.toFixed(1)} bar</span></div>
+      <div class="phase-row"><span>Working pressure (submerged weight + ${(RESID_FRICTION*100).toFixed(0)}% residual friction, unfactored)</span><span class="pval">${r.extractionPressure_bar.toFixed(1)} bar</span></div>
       <div class="phase-row"><span>Extraction velocity (4-hr target)</span><span class="pval">${r.vel_mms.toFixed(3)} mm/s</span></div>
       <div class="phase-row"><span>Embedment to clear</span><span class="pval">${inp.emb}m in 4.0 hrs</span></div>
+      <div class="phase-row"><span>Operational window per pile</span><span class="pval">8 hrs (4 extraction + 4 seal set / crane / post-ops)</span></div>
       <span class="pump-tag centrifugal">✓ Large centrifugal seawater pump — high flow</span>
     </div>`;
 
-  // Pump feasibility
+  // Pump feasibility (AUDIT FIX 5 — percentages uncapped; bars cap fill internally)
   const lP  = parseFloat(el('lim-pressure').value) || 50;
   const lF  = parseFloat(el('lim-flow').value) || 600;
-  const pPct = Math.min((r.breakoutPressure_bar / lP) * 100, 120);
-  const fPct = Math.min((r.extractionFlow_Ls / lF) * 100, 120);
+  const pPct = (r.breakoutPressure_bar / lP) * 100;
+  const fPct = (r.extractionFlow_Ls / lF) * 100;
   const pc   = gaugeColour(pPct), fc = gaugeColour(fPct);
   const oS   = (pPct >= 100 || fPct >= 100) ? 'difficult' : (pPct >= 75 || fPct >= 75) ? 'marginal' : 'ok';
   const oMsg = { ok:'✓ Both parameters within commercial pump envelope for single-unit operation.', marginal:'⚠ One or more parameters approaching single-unit equipment limits. Verify with pump supplier before committing to design.', difficult:'✗ Parameter(s) exceed single-unit limits. Multiple pump sets in parallel required, or review pile/soil inputs.' };
@@ -576,12 +660,12 @@ function renderResults(inp, r) {
           <div class="feas-pct" style="color:${fc}">${fPct.toFixed(0)}% of limit</div>
         </div>
       </div>
-      <div class="feas-note">Limits adjustable in Pump equipment limits panel. Defaults reflect typical single-unit North Sea pump rental ratings.</div>
+      <div class="feas-note">Limits adjustable in Pump equipment limits panel. Defaults reflect typical single-unit North Sea pump rental ratings. Gauges pair Phase 1 pressure with the triplex limit and Phase 2 flow with the centrifugal limit — additionally verify Phase 1 flow (${r.breakoutFlow_Ls.toFixed(1)} L/s) against the triplex flow rating and Phase 2 working pressure (${r.extractionPressure_bar.toFixed(1)} bar) against the centrifugal head rating with the supplier.</div>
     </div>`;
 
-  // Seal analysis
+  // Seal analysis (AUDIT FIX 4 — pressure-energised model)
   const s = calculateSeal(inp, r);
-  const extC   = gaugeColour(s.extrusionPct);
+  const extC = gaugeColour(s.extrusionPct);
 
   el('seal-analysis').innerHTML = `
     <div class="seal-panel">
@@ -599,16 +683,17 @@ function renderResults(inp, r) {
             <div class="seal-row"><span>Dome height</span><span class="sval">${s.domeH.toFixed(2)} m</span></div>
             <div class="seal-row"><span>Sphere radius of dome</span><span class="sval">${s.R_sphere.toFixed(2)} m</span></div>
             <div class="seal-row"><span>Rim angle from vertical</span><span class="sval">${s.rimAngle_deg.toFixed(1)}°</span></div>
-            <div class="seal-row"><span>Differential pressure across dome</span><span class="sval">${s.dP_bar.toFixed(1)} bar</span></div>
+            <div class="seal-row"><span>Applied gauge pressure at seal</span><span class="sval">${s.P_applied.toFixed(1)} bar</span></div>
           </div>
 
           <div>
             <div class="seal-group-title">Force analysis</div>
-            <div class="seal-row"><span>↓ Total downward thrust on seabed</span><span class="sval">${s.downThrust_MN.toFixed(1)} MN <span class="sval2">(${s.downThrust_t.toFixed(0)} t)</span></span></div>
+            <div class="seal-row"><span>↓ Total downward thrust on seabed</span><span class="sval">${s.downThrust_MN.toFixed(1)} MN <span class="sval2">(${Math.round(s.downThrust_t).toLocaleString('en-GB')} t)</span></span></div>
             <div class="seal-row"><span>Net bearing pressure increase above ambient</span><span class="sval">${s.seabedBearing_kPa.toFixed(0)} kPa</span></div>
-            <div class="seal-row"><span>← → Self-energising radial force</span><span class="sval">${s.radialFPL_kNm.toFixed(0)} kN/m of rim</span></div>
+            <div class="seal-row"><span>Lip contact pressure (pressure-energised: applied + inflation)</span><span class="sval">${s.lipContact_bar.toFixed(1)} bar</span></div>
+            <div class="seal-row"><span>Sealing margin (contact − applied)</span><span class="sval">+${s.sealMargin_bar.toFixed(1)} bar ✓</span></div>
+            <div class="seal-row"><span>← → Radial line load at ${(s.lipWidth_m*1000).toFixed(0)}mm lip width</span><span class="sval">${s.radialFPL_kNm.toFixed(0)} kN/m of rim</span></div>
             <div class="seal-row"><span>Total circumferential radial force</span><span class="sval">${s.totalRadial_MN.toFixed(1)} MN</span></div>
-            <div class="seal-row"><span>Lip contact pressure at ${(s.lipWidth_m*1000).toFixed(0)}mm lip width</span><span class="sval">${s.lipContact_bar.toFixed(0)} bar</span></div>
           </div>
 
           <div>
@@ -626,9 +711,9 @@ function renderResults(inp, r) {
               <div class="seal-gauge-label">
                 <span>Hydraulic fracturing at pile tip</span>
                 <span class="seal-gauge-nums">
-                  <strong style="color:#eef4fc">ΔP ${s.dP_bar.toFixed(1)} bar</strong>
+                  <strong style="color:#eef4fc">P ${s.P_applied.toFixed(1)} bar</strong>
                   <span class="feas-sep">vs</span>
-                  <span class="feas-limit">threshold ${s.fractureThreshold_bar.toFixed(2)} bar (K₀=0.45, γ'=9 kN/m³)</span>
+                  <span class="feas-limit">threshold ${s.fractureThreshold_bar.toFixed(2)} bar (K₀=0.45, γ'=${s.gammaSub_kNm3.toFixed(1)} kN/m³${inp.tipType === 'sand' ? ' from tip input' : ''})</span>
                 </span>
               </div>
               <div class="seal-bar-track">
@@ -643,7 +728,7 @@ function renderResults(inp, r) {
           </div>
 
           <div class="seal-self-energising">
-            <strong>Self-energising mechanism:</strong> The domed geometry converts the applied downward pressure into increasing radial outward force at the lip edges — the seal grips the pile wall harder as pressure builds. At ${s.P_applied.toFixed(1)} bar, the lip exerts <strong>${s.radialFPL_kNm.toFixed(0)} kN per metre</strong> of rim circumference against the pile wall. Seal integrity improves with increasing pressure; the 1.5 bar inflation pressure only serves to set the dome geometry before pressurisation begins.
+            <strong>Pressure-energised mechanism:</strong> The inflated dome is squeezed between the applied water pressure above and the soil plug below. Its internal pressure tracks the applied pressure, pressing the lip against the pile inner wall with a contact pressure of applied + ${P_INFLATE.toFixed(1)} bar inflation — at ${s.P_applied.toFixed(1)} bar applied, the lip bears at <strong>${s.lipContact_bar.toFixed(1)} bar</strong> (${s.radialFPL_kNm.toFixed(0)} kN per metre of rim at the ${(s.lipWidth_m*1000).toFixed(0)}mm lip). Contact pressure always exceeds the sealed pressure, so the sealing criterion is satisfied at any applied pressure; the 1.5 bar inflation sets the dome geometry and provides the initial sealing margin.
           </div>
 
         </div>
@@ -680,6 +765,8 @@ Object.keys(sliderFmt).forEach(id => {
     const out = el(id+'-v');
     if (out) out.textContent = sliderFmt[id](input.value);
     markDirty();
+    // AUDIT FIX 3 — live geometry feedback while sliding
+    renderInputErrors(validateInputs(getInputs()));
   });
 });
 el('soil').addEventListener('change', () => {
@@ -722,10 +809,6 @@ function generateReport(inp, r) {
   const dateStr = now.toLocaleDateString('en-GB', { day:'2-digit', month:'long', year:'numeric' });
   const timeStr = now.toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' });
 
-  // Capture pile diagram as image
-  const pileCanvas = el('pile-canvas');
-  const pileImgSrc = pileCanvas ? pileCanvas.toDataURL('image/png') : '';
-
   // Draw a fresh dedicated report pile canvas (taller, cleaner)
   const rpCanvas = document.createElement('canvas');
   rpCanvas.width = 180; rpCanvas.height = 420;
@@ -735,17 +818,15 @@ function generateReport(inp, r) {
   const s  = calculateSeal(inp, r);
   const ts = r.ts;
 
-  const soilLabel = { '50':'Favourable — soft/loose', '100':'Moderate — medium dense', '150':'Difficult — dense/stiff', 'custom':'Custom' }[inp.usf_kPa.toString()] || `Custom (${inp.usf_kPa} kPa)`;
   const tipLabel  = { clay:`Clay plugged (N_c = 9, S_u = ${inp.su_tip} kPa)`, sand:`Sand unplugged (N_q = ${inp.nq_tip}, γ' = ${inp.gamma_sub} kN/m³)`, none:'Not included' }[inp.tipType];
 
   const lP = parseFloat(el('lim-pressure').value) || 50;
   const lF = parseFloat(el('lim-flow').value) || 600;
-  const pPct = Math.min((r.breakoutPressure_bar / lP) * 100, 120);
-  const fPct = Math.min((r.extractionFlow_Ls / lF) * 100, 120);
+  // AUDIT FIX 5 — uncapped percentages in numeric output; bar fill capped at render
+  const pPct = (r.breakoutPressure_bar / lP) * 100;
+  const fPct = (r.extractionFlow_Ls / lF) * 100;
   const gc   = p => p >= 100 ? '#ef4444' : p >= 75 ? '#f59e0b' : '#22c55e';
   const gcPrint = p => p >= 100 ? 'bad' : p >= 75 ? 'warn' : 'ok';
-
-  const unfactored_MN = (r.designForce_kN / inp.fos) / 1000;
 
   el('report-content').innerHTML = `
   <div class="rpt">
@@ -757,7 +838,7 @@ function generateReport(inp, r) {
       </div>
       <div class="rpt-meta">
         Date: ${dateStr} ${timeStr}<br>
-        Version: v1.0<br>
+        Version: v1.1<br>
         Reference: AH-${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}
       </div>
     </div>
@@ -782,7 +863,7 @@ function generateReport(inp, r) {
         <div class="rpt-kv" style="margin-top:0.75rem;"><span class="rk">Hydraulic efficiency</span><span class="rv">0.85</span></div>
         <div class="rpt-kv"><span class="rk">Steel density</span><span class="rv">7,850 kg/m³</span></div>
         <div class="rpt-kv"><span class="rk">Seawater density</span><span class="rv">1,025 kg/m³</span></div>
-        <div class="rpt-kv"><span class="rk">Extraction target</span><span class="rv">4 hours</span></div>
+        <div class="rpt-kv"><span class="rk">Extraction target</span><span class="rv">4 hours (8-hr operational window per pile)</span></div>
         <div class="rpt-kv"><span class="rk">Pile steel mass</span><span class="rv">${r.pileMass_t.toFixed(0)} t</span></div>
       </div>
     </div>
@@ -795,12 +876,12 @@ function generateReport(inp, r) {
         <div class="rpt-section-title">Force breakdown at breakout</div>
         <div class="rpt-kv"><span class="rk">+ Skin friction (${inp.usf_kPa} kPa × ${(Math.PI*inp.dBase).toFixed(2)}m × ${inp.emb}m)</span><span class="rv hi">+${r.skinFriction_MN.toFixed(3)} MN</span></div>
         <div class="rpt-kv"><span class="rk">+ Pile self-weight</span><span class="rv hi">+${(r.pileWeight_kN/1000).toFixed(3)} MN</span></div>
-        <div class="rpt-kv"><span class="rk">− Buoyancy (deducted)</span><span class="rv" style="color:var(--steel)">−${(r.buoyancy_kN/1000).toFixed(3)} MN</span></div>
+        <div class="rpt-kv"><span class="rk">− Buoyancy of steel displacement (deducted)</span><span class="rv" style="color:var(--steel)">−${(r.buoyancy_kN/1000).toFixed(3)} MN</span></div>
         ${r.tipSuction_kN > 0 ? `<div class="rpt-kv"><span class="rk">+ Tip suction — ${tipLabel}</span><span class="rv orange">+${(r.tipSuction_kN/1000).toFixed(3)} MN</span></div>` : ''}
-        <div class="rpt-total-row"><span>Unfactored total</span><span class="rv">${unfactored_MN.toFixed(3)} MN</span></div>
-        <div class="rpt-kv" style="margin-top:8px;"><span class="rk">× FoS ${inp.fos.toFixed(1)} → design force</span><span class="rv hi">${(r.designForce_kN/1000).toFixed(3)} MN  /  ${r.designForce_t.toFixed(0)} t</span></div>
+        <div class="rpt-total-row"><span>Unfactored total</span><span class="rv">${r.baseForce_MN.toFixed(3)} MN</span></div>
+        <div class="rpt-kv" style="margin-top:8px;"><span class="rk">× FoS ${inp.fos.toFixed(1)} → design force</span><span class="rv hi">${(r.designForce_kN/1000).toFixed(3)} MN  /  ${Math.round(r.designForce_t).toLocaleString('en-GB')} t</span></div>
         <div class="rpt-kv"><span class="rk">÷ efficiency 0.85 → hydraulic requirement</span><span class="rv hi">${(r.hydForce_kN/1000).toFixed(3)} MN</span></div>
-        ${r.tipSuction_kN > 0 ? `<div style="margin-top:0.75rem;font-size:0.72rem;color:#fdba74;background:rgba(251,146,60,0.08);border-left:3px solid rgba(251,146,60,0.4);border-radius:4px;padding:0.4rem 0.6rem;line-height:1.5;">Tip suction ${r.tipSuction_t.toFixed(0)} t = <strong>${r.tipSuction_pct.toFixed(0)}%</strong> of total unfactored extraction force</div>` : ''}
+        ${r.tipSuction_kN > 0 ? `<div style="margin-top:0.75rem;font-size:0.72rem;color:#fdba74;background:rgba(251,146,60,0.08);border-left:3px solid rgba(251,146,60,0.4);border-radius:4px;padding:0.4rem 0.6rem;line-height:1.5;">Tip suction ${Math.round(r.tipSuction_t).toLocaleString('en-GB')} t = <strong>${r.tipSuction_pct.toFixed(0)}%</strong> of total unfactored extraction force</div>` : ''}
       </div>
     </div>
 
@@ -808,7 +889,7 @@ function generateReport(inp, r) {
       <div class="rpt-section">
         <div class="rpt-section-title">Phase 1 — break-out</div>
         <div class="rpt-kv"><span class="rk">Required pressure</span><span class="rv ${gcPrint(pPct)}">${r.breakoutPressure_bar.toFixed(1)} bar</span></div>
-        <div class="rpt-kv"><span class="rk">Flow during break-out</span><span class="rv">${r.breakoutFlow_Ls.toFixed(0)} L/s</span></div>
+        <div class="rpt-kv"><span class="rk">Flow during break-out (make-up + leakage)</span><span class="rv">${r.breakoutFlow_Ls.toFixed(1)} L/s</span></div>
         <div class="rpt-kv"><span class="rk">Hydraulic force</span><span class="rv">${(r.hydForce_kN/1000).toFixed(2)} MN</span></div>
         <div class="rpt-kv"><span class="rk">Pump limit</span><span class="rv">${lP} bar</span></div>
         <div class="rpt-kv"><span class="rk">% of pump limit</span><span class="rv ${gcPrint(pPct)}">${pPct.toFixed(0)}%</span></div>
@@ -817,7 +898,7 @@ function generateReport(inp, r) {
       <div class="rpt-section">
         <div class="rpt-section-title">Phase 2 — extraction</div>
         <div class="rpt-kv"><span class="rk">Required flow rate</span><span class="rv ${gcPrint(fPct)}">${r.extractionFlow_Ls.toFixed(0)} L/s</span></div>
-        <div class="rpt-kv"><span class="rk">Working pressure</span><span class="rv">${r.extractionPressure_bar.toFixed(1)} bar</span></div>
+        <div class="rpt-kv"><span class="rk">Working pressure (unfactored est.)</span><span class="rv">${r.extractionPressure_bar.toFixed(1)} bar</span></div>
         <div class="rpt-kv"><span class="rk">Extraction velocity</span><span class="rv">${r.vel_mms.toFixed(3)} mm/s</span></div>
         <div class="rpt-kv"><span class="rk">Extraction time</span><span class="rv">4.0 hours (${inp.emb} m)</span></div>
         <div class="rpt-kv"><span class="rk">Flow limit</span><span class="rv">${lF} L/s</span></div>
@@ -838,6 +919,7 @@ function generateReport(inp, r) {
         <div class="rpt-bar-track"><div class="rpt-bar-fill" style="width:${Math.min(fPct,100)}%;background:${gc(fPct)}"></div></div>
         <span class="rpt-bar-pct" style="color:${gc(fPct)}">${r.extractionFlow_Ls.toFixed(0)} / ${lF} L/s  (${fPct.toFixed(0)}%)</span>
       </div>
+      <div style="margin-top:0.6rem;font-size:0.7rem;color:var(--steel-dim);font-style:italic;">Phase 1 flow (${r.breakoutFlow_Ls.toFixed(1)} L/s) to be verified against triplex flow rating; Phase 2 working pressure (${r.extractionPressure_bar.toFixed(1)} bar) to be verified against centrifugal head rating.</div>
     </div>
 
     <div class="rpt-grid2">
@@ -846,12 +928,13 @@ function generateReport(inp, r) {
         <div class="rpt-kv"><span class="rk">Dome height / inner radius</span><span class="rv">${s.domeRatio.toFixed(2)}</span></div>
         <div class="rpt-kv"><span class="rk">Dome height</span><span class="rv">${s.domeH.toFixed(2)} m</span></div>
         <div class="rpt-kv"><span class="rk">Sphere radius</span><span class="rv">${s.R_sphere.toFixed(2)} m</span></div>
-        <div class="rpt-kv"><span class="rk">Differential pressure</span><span class="rv">${s.dP_bar.toFixed(1)} bar</span></div>
-        <div class="rpt-kv"><span class="rk">Downward thrust</span><span class="rv">${s.downThrust_MN.toFixed(1)} MN  (${s.downThrust_t.toFixed(0)} t)</span></div>
-        <div class="rpt-kv"><span class="rk">Self-energising radial force</span><span class="rv">${s.radialFPL_kNm.toFixed(0)} kN/m rim</span></div>
-        <div class="rpt-kv"><span class="rk">Lip contact pressure</span><span class="rv">${s.lipContact_bar.toFixed(0)} bar</span></div>
-        <div class="rpt-kv"><span class="rk">Extrusion risk</span><span class="rv ${s.extrusionCls === 'low' ? 'ok' : s.extrusionCls === 'moderate' ? 'warn' : 'bad'}">${s.extrusionCls.toUpperCase()} — ${s.extrusionMsg}</span></div>
-        <div class="rpt-kv"><span class="rk">Seabed bearing</span><span class="rv ${s.seabedCls === 'low' ? 'ok' : s.seabedCls === 'moderate' ? 'warn' : 'bad'}">${s.seabedBearing_kPa.toFixed(0)} kPa — ${s.seabedCls.toUpperCase()}</span></div>
+        <div class="rpt-kv"><span class="rk">Applied gauge pressure</span><span class="rv">${s.P_applied.toFixed(1)} bar</span></div>
+        <div class="rpt-kv"><span class="rk">Downward thrust</span><span class="rv">${s.downThrust_MN.toFixed(1)} MN  (${Math.round(s.downThrust_t).toLocaleString('en-GB')} t)</span></div>
+        <div class="rpt-kv"><span class="rk">Lip contact pressure (pressure-energised)</span><span class="rv">${s.lipContact_bar.toFixed(1)} bar</span></div>
+        <div class="rpt-kv"><span class="rk">Radial line load (${(s.lipWidth_m*1000).toFixed(0)}mm lip)</span><span class="rv">${s.radialFPL_kNm.toFixed(0)} kN/m rim</span></div>
+        <div class="rpt-kv"><span class="rk">Extrusion risk (vs 300 bar with rings)</span><span class="rv ${s.extrusionCls === 'low' ? 'ok' : s.extrusionCls === 'moderate' ? 'warn' : 'bad'}">${s.extrusionPct.toFixed(0)}% — ${s.extrusionCls.toUpperCase()}</span></div>
+        <div class="rpt-kv"><span class="rk">Net seabed bearing increase</span><span class="rv">${s.seabedBearing_kPa.toFixed(0)} kPa — confined plug, non-limiting</span></div>
+        <div class="rpt-kv"><span class="rk">Hydraulic fracturing at tip</span><span class="rv ${s.fracturingActive ? 'ok' : 'warn'}">${s.fractureRatio.toFixed(1)}× threshold (${s.fractureThreshold_bar.toFixed(2)} bar) — ${s.fracturingActive ? 'ACTIVE (beneficial)' : 'not initiated'}</span></div>
       </div>
       ${r.tipSuction_kN > 0 ? `
       <div class="rpt-section">
@@ -859,7 +942,7 @@ function generateReport(inp, r) {
         <div class="rpt-kv"><span class="rk">Soil model</span><span class="rv">${tipLabel}</span></div>
         <div class="rpt-kv"><span class="rk">Pile condition at tip</span><span class="rv">${ts.plugged ? 'Plugged (full inner area)' : 'Unplugged (annulus only)'}</span></div>
         <div class="rpt-kv"><span class="rk">Area used</span><span class="rv">${ts.plugged ? ts.A_inner.toFixed(2)+' m² (full inner)' : ts.A_annul.toFixed(2)+' m² (annulus)'}</span></div>
-        <div class="rpt-kv"><span class="rk">Tip suction force</span><span class="rv orange">${r.tipSuction_kN.toFixed(0)} kN  /  ${r.tipSuction_t.toFixed(0)} t</span></div>
+        <div class="rpt-kv"><span class="rk">Tip suction force</span><span class="rv orange">${Math.round(r.tipSuction_kN).toLocaleString('en-GB')} kN  /  ${Math.round(r.tipSuction_t).toLocaleString('en-GB')} t</span></div>
         <div class="rpt-kv"><span class="rk">% of unfactored total</span><span class="rv orange">${r.tipSuction_pct.toFixed(0)}%</span></div>
         <div style="margin-top:0.65rem;font-size:0.72rem;color:var(--steel-dim);line-height:1.5;font-style:italic;">Phase 1 hydraulic pre-conditioning breaks negative pore pressure at tip before upward extraction force is applied. Crane-only extraction must overcome skin friction and tip suction simultaneously.</div>
       </div>` : `
@@ -870,7 +953,7 @@ function generateReport(inp, r) {
     </div>
 
     <div class="rpt-disclaimer">
-      This report was generated by AquaHERO v1.0 on ${dateStr} at ${timeStr}. AquaHERO — Aqua Hydraulic Extraction &amp; Recovery Operation. All outputs are for engineering guidance only and require independent verification by a qualified engineer before use in design, planning, or offshore operations. Assumptions: hydraulic efficiency 0.85; steel density 7,850 kg/m³; seawater density 1,025 kg/m³; embedment within lower straight pile section; 4-hour extraction target; spherical cap dome geometry; inflation pressure 1.5 bar.
+      This report was generated by AquaHERO v1.1 on ${dateStr} at ${timeStr}. AquaHERO — Aqua Hydraulic Extraction &amp; Recovery Operation. All outputs are for engineering guidance only and require independent verification by a qualified engineer before use in design, planning, or offshore operations. Assumptions: hydraulic efficiency 0.85; steel density 7,850 kg/m³; seawater density 1,025 kg/m³; buoyancy on steel displacement (flooded pile); embedment within lower straight pile section (enforced); 4-hour extraction within an 8-hour per-pile operational window (4 h extraction + 4 h seal setting, crane engagement and post-extraction operations); pressure-energised base seal (contact = applied + 1.5 bar inflation); Phase 1 flow from water-column compressibility over a ${(T_PRESSURISE_S/60).toFixed(0)}-minute ramp plus ${(LEAK_FRACTION*100).toFixed(0)}% leakage allowance; Phase 2 pressure from submerged weight plus ${(RESID_FRICTION*100).toFixed(0)}% residual skin friction, unfactored, excluding line losses.
     </div>
 
   </div>`;
@@ -878,8 +961,11 @@ function generateReport(inp, r) {
 
 // ── Initial render ─────────────────────────────────────────────────────────
 (function init() {
-  const inp = getInputs();
-  const r   = calculate(inp);
+  const inp    = getInputs();
+  const errors = validateInputs(inp);
+  renderInputErrors(errors);
+  if (errors.length > 0) { setButtonState('dirty'); return; }
+  const r = calculate(inp);
   _lastResult = { inp, r };
   renderResults(inp, r);
   setButtonState('idle');
