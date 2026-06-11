@@ -60,6 +60,18 @@ body { font-family: var(--font-body); background: var(--navy); color: var(--stee
 .hdr-calc-btn.dirty:hover { background: #d97706; }
 .hdr-calc-btn.done  { background: #16a34a; box-shadow: 0 2px 8px rgba(22,163,74,0.35); }
 .hdr-calc-btn.spinning svg { animation: spin 0.7s linear infinite; }
+.hdr-report-btn {
+  display: flex; align-items: center; gap: 0.4rem;
+  background: transparent; color: var(--sky-light);
+  font-family: var(--font-body); font-size: 0.8rem; font-weight: 600;
+  border: 1px solid rgba(56,189,248,0.35); border-radius: var(--r-lg);
+  padding: 0.42rem 1rem; cursor: pointer; white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+.hdr-report-btn:hover { background: rgba(14,165,233,0.1); border-color: var(--sky); transform: translateY(-1px); }
+.rpt-seal-diagram-row { display: flex; gap: 1.5rem; align-items: flex-start; margin-bottom: 1rem; }
+.rpt-seal-svg-wrap { flex-shrink: 0; border: 1px solid var(--panel-border); border-radius: var(--r-lg); padding: 0.5rem; background: rgba(0,0,0,0.2); }
+.rpt-seal-caption { flex: 1; }
 .seal-confined-note { margin-top: 0.65rem; font-size: 0.7rem; color: var(--steel-dim); background: rgba(14,165,233,0.05); border-left: 3px solid rgba(14,165,233,0.2); border-radius: var(--r); padding: 0.45rem 0.7rem; line-height: 1.55; font-style: italic; }
 
 /* ── HERO ────────────────────────────────────────────── */
@@ -387,6 +399,9 @@ select:focus { border-color: var(--sky-mid); }
   .rpt-tag.triplex { background: #e0f2fe !important; color: #0369a1 !important; border-color: #bae6fd !important; }
   .rpt-tag.centrifugal { background: #f0fdf4 !important; color: #15803d !important; border-color: #bbf7d0 !important; }
   .rpt-grid2, .rpt-grid3 { break-inside: avoid; }
+  .rpt-seal-diagram-row { break-inside: avoid; }
+  .rpt-seal-svg-wrap { border-color: #e2e8f0 !important; background: white !important; }
+  .hdr-report-btn { display: none !important; }
   .rpt-diagram-row { break-inside: avoid; }
 }
 
