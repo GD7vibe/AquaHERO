@@ -312,7 +312,7 @@ function calculateSeal(inp, r) {
 
 // ── Seal SVG diagram ───────────────────────────────────────────────────────
 // MERGE v1.2 — multi-ring seal assembly: n stacked toroidal tubes + dome
-function drawSealSVG(s) {
+function drawSealSVG(s, idPrefix) { idPrefix = idPrefix || '';
   const W = 180, H = 175;
   const pileX_L = 30, pileX_R = 150;
   const pileW = pileX_R - pileX_L;
@@ -347,14 +347,14 @@ function drawSealSVG(s) {
   let arrows = '';
   for (let i = 0; i < 5; i++) {
     const ax = pileX_L + 12 + i * (pileW - 24) / 4;
-    arrows += `<line x1="${ax}" y1="${domeBaseY - domeH_px - 20}" x2="${ax}" y2="${domeBaseY - domeH_px - 6}" stroke="#38bdf8" stroke-width="1.2" marker-end="url(#arrB)"/>`;
+    arrows += `<line x1="${ax}" y1="${domeBaseY - domeH_px - 20}" x2="${ax}" y2="${domeBaseY - domeH_px - 6}" stroke="#38bdf8" stroke-width="1.2" marker-end="url(#${idPrefix}arrB)"/>`;
   }
 
   return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <marker id="arrB" markerWidth="5" markerHeight="5" refX="3" refY="2.5" orient="auto"><polygon points="0 0, 5 2.5, 0 5" fill="#38bdf8"/></marker>
-    <marker id="arrL" markerWidth="5" markerHeight="5" refX="0" refY="2.5" orient="auto"><polygon points="5 0, 0 2.5, 5 5" fill="#a78bfa"/></marker>
-    <marker id="arrR" markerWidth="5" markerHeight="5" refX="3" refY="2.5" orient="auto"><polygon points="0 0, 5 2.5, 0 5" fill="#a78bfa"/></marker>
+    <marker id="${idPrefix}arrB" markerWidth="5" markerHeight="5" refX="3" refY="2.5" orient="auto"><polygon points="0 0, 5 2.5, 0 5" fill="#38bdf8"/></marker>
+    <marker id="${idPrefix}arrL" markerWidth="5" markerHeight="5" refX="0" refY="2.5" orient="auto"><polygon points="5 0, 0 2.5, 5 5" fill="#a78bfa"/></marker>
+    <marker id="${idPrefix}arrR" markerWidth="5" markerHeight="5" refX="3" refY="2.5" orient="auto"><polygon points="0 0, 5 2.5, 0 5" fill="#a78bfa"/></marker>
   </defs>
   ${hatch}
   <line x1="4" y1="${seabedY}" x2="${W-4}" y2="${seabedY}" stroke="#4e6280" stroke-width="1" stroke-dasharray="4,3"/>
@@ -363,8 +363,8 @@ function drawSealSVG(s) {
   ${arrows}
   <path d="M ${pileX_L} ${domeBaseY} A ${rSph_px} ${rSph_px} 0 0 1 ${pileX_R} ${domeBaseY}" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.8"/>
   ${tubes}
-  <line x1="${pileX_L - 2}" y1="${tubeYs[n-1]}" x2="${pileX_L - 17}" y2="${tubeYs[n-1]}" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#arrL)"/>
-  <line x1="${pileX_R + 2}" y1="${tubeYs[n-1]}" x2="${pileX_R + 17}" y2="${tubeYs[n-1]}" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#arrR)"/>
+  <line x1="${pileX_L - 2}" y1="${tubeYs[n-1]}" x2="${pileX_L - 17}" y2="${tubeYs[n-1]}" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#${idPrefix}arrL)"/>
+  <line x1="${pileX_R + 2}" y1="${tubeYs[n-1]}" x2="${pileX_R + 17}" y2="${tubeYs[n-1]}" stroke="#a78bfa" stroke-width="1.3" marker-end="url(#${idPrefix}arrR)"/>
   <text x="${cx}" y="${domeBaseY - domeH_px - 24}" font-size="8.5" fill="#38bdf8" text-anchor="middle" font-family="Inter,sans-serif">applied pressure</text>
   <text x="${cx}" y="${seabedY + 16}" font-size="8" fill="#4e6280" text-anchor="middle" font-family="Inter,sans-serif">seabed</text>
   <text x="${cx}" y="${(tubeYs[0] + tubeYs[n-1]) / 2 + 3}" font-size="8" fill="#a78bfa" text-anchor="middle" font-family="Inter,sans-serif" opacity="0.85">${n} × seal rings</text>
@@ -792,6 +792,11 @@ el('tab-calc-btn').addEventListener('click', () => {
   el('tab-panel-report').style.display = 'none';
 });
 
+el('hdr-report-btn').addEventListener('click', () => {
+  el('tab-report-btn').click();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
 el('tab-report-btn').addEventListener('click', () => {
   el('tab-report-btn').classList.add('active');
   el('tab-calc-btn').classList.remove('active');
@@ -838,7 +843,7 @@ function generateReport(inp, r) {
     <div class="rpt-header">
       <div>
         <div class="rpt-logo">Aqua<span>HERO</span></div>
-        <div style="font-size:0.72rem;color:var(--steel-dim);margin-top:2px;">Aqua Hydraulic Extraction &amp; Recovery Operation — Calculation Report</div>
+        <div style="font-size:0.72rem;color:var(--steel-dim);margin-top:2px;">Aqua Hydraulic Extraction Restoration Operation — Calculation Report</div>
       </div>
       <div class="rpt-meta">
         Date: ${dateStr} ${timeStr}<br>
@@ -928,6 +933,22 @@ function generateReport(inp, r) {
       <div style="margin-top:0.6rem;font-size:0.7rem;color:var(--steel-dim);font-style:italic;">Phase 1 flow (${r.breakoutFlow_Ls.toFixed(1)} L/s) to be verified against triplex flow rating; Phase 2 working pressure (${r.extractionPressure_bar.toFixed(1)} bar) to be verified against centrifugal head rating.</div>
     </div>
 
+    <div class="rpt-section">
+      <div class="rpt-section-title">Base seal diagram</div>
+      <div class="rpt-seal-diagram-row">
+        <div class="rpt-seal-svg-wrap">${drawSealSVG(s, 'rpt-')}</div>
+        <div class="rpt-seal-caption">
+          <div style="font-size:0.7rem;color:var(--steel);line-height:1.7;">
+            <div><strong style="color:var(--steel-light)">${s.nRings} × ⌀${(s.tubeDia_m*1000).toFixed(0)} mm stacked toroidal seal tubes</strong></div>
+            <div>Stack height (rings + dome): ${s.stackHeight_m.toFixed(2)} m</div>
+            <div>Dome height above top ring: ${s.domeH.toFixed(2)} m</div>
+            <div>Sphere radius of dome: ${s.R_sphere.toFixed(2)} m</div>
+            <div style="margin-top:0.4rem;"><strong style="color:var(--sky-light)">Mechanism:</strong> Pressure-energised — top ring contact = applied + 1.5 bar inflation. Lower rings provide staged passive redundancy.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="rpt-grid2">
       <div class="rpt-section">
         <div class="rpt-section-title">Base seal analysis</div>
@@ -961,7 +982,7 @@ function generateReport(inp, r) {
     </div>
 
     <div class="rpt-disclaimer">
-      This report was generated by AquaHERO v1.2 on ${dateStr} at ${timeStr}. AquaHERO — Aqua Hydraulic Extraction &amp; Recovery Operation. All outputs are for engineering guidance only and require independent verification by a qualified engineer before use in design, planning, or offshore operations. Assumptions: hydraulic efficiency 0.85; steel density 7,850 kg/m³; seawater density 1,025 kg/m³; buoyancy on steel displacement (flooded pile); embedment within lower straight pile section (enforced); internal plug skin friction at ${inp.intFric.toFixed(2)} × external unit friction on the inner wall (plug held stationary by seal down-thrust while pile slides past); 4-hour extraction within an 8-hour per-pile operational window (4 h extraction + 4 h seal setting, crane engagement and post-extraction operations); multi-ring pressure-energised base seal (${s.nRings} stacked toroidal tubes + domed diaphragm; top-ring contact = applied + 1.5 bar inflation, lower rings staged passive redundancy; per-ring contact width ≈ 25% of tube diameter; seal–wall friction μ = 0.15); Phase 1 flow from water-column compressibility over a ${(T_PRESSURISE_S/60).toFixed(0)}-minute ramp plus ${(LEAK_FRACTION*100).toFixed(0)}% leakage allowance; Phase 2 pressure from submerged weight plus ${(RESID_FRICTION*100).toFixed(0)}% residual skin friction, unfactored, excluding line losses.
+      This report was generated by AquaHERO v1.2 on ${dateStr} at ${timeStr}. AquaHERO — Aqua Hydraulic Extraction Restoration Operation. All outputs are for engineering guidance only and require independent verification by a qualified engineer before use in design, planning, or offshore operations. Assumptions: hydraulic efficiency 0.85; steel density 7,850 kg/m³; seawater density 1,025 kg/m³; buoyancy on steel displacement (flooded pile); embedment within lower straight pile section (enforced); internal plug skin friction at ${inp.intFric.toFixed(2)} × external unit friction on the inner wall (plug held stationary by seal down-thrust while pile slides past); 4-hour extraction within an 8-hour per-pile operational window (4 h extraction + 4 h seal setting, crane engagement and post-extraction operations); multi-ring pressure-energised base seal (${s.nRings} stacked toroidal tubes + domed diaphragm; top-ring contact = applied + 1.5 bar inflation, lower rings staged passive redundancy; per-ring contact width ≈ 25% of tube diameter; seal–wall friction μ = 0.15); Phase 1 flow from water-column compressibility over a ${(T_PRESSURISE_S/60).toFixed(0)}-minute ramp plus ${(LEAK_FRACTION*100).toFixed(0)}% leakage allowance; Phase 2 pressure from submerged weight plus ${(RESID_FRICTION*100).toFixed(0)}% residual skin friction, unfactored, excluding line losses.
     </div>
 
   </div>`;
