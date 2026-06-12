@@ -785,11 +785,13 @@ el('tip-soil-type').addEventListener('change', () => {
 function showCalculatorTab() {
   el('tab-panel-calculator').style.display = '';
   el('tab-panel-report').style.display = 'none';
+  el('hdr-print-btn').style.display = 'none';
 }
 
 function showReportTab() {
   el('tab-panel-calculator').style.display = 'none';
   el('tab-panel-report').style.display = '';
+  el('hdr-print-btn').style.display = '';
   if (_lastResult) {
     generateReport(_lastResult.inp, _lastResult.r);
     el('report-stale').style.display = 'none';
@@ -804,6 +806,8 @@ el('hdr-report-btn').addEventListener('click', () => {
   showReportTab();
   el('tab-panel-report').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
+
+el('hdr-print-btn').addEventListener('click', () => window.print());
 
 const navCta = document.querySelector('.nav-cta');
 if (navCta) navCta.addEventListener('click', showCalculatorTab);
