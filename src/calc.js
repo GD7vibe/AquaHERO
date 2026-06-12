@@ -78,8 +78,8 @@ function renderInputErrors(errors) {
     box = document.createElement('div');
     box.id = 'input-errors';
     box.className = 'input-errors';
-    const btn = el('calc-btn');
-    btn.parentNode.insertBefore(box, btn);
+    const panel = document.querySelector('.inputs-panel');
+    panel.appendChild(box);
   }
   if (errors.length === 0) {
     box.style.display = 'none';
@@ -514,10 +514,8 @@ function runCalculation() {
 
   setButtonState('spinning');
   _dirty = false;
-  // If on report tab, switch back to calculator to show results
-  if (el('tab-panel-report').style.display !== 'none') {
-    el('tab-calc-btn').click();
-  }
+  // Always show the calculator panel when calculating
+  showCalculatorTab();
   setTimeout(() => {
     const r = calculate(inp);
     // AUDIT FIX 8.4 — defensive sanity guard (unreachable with corrected
@@ -739,7 +737,6 @@ function renderResults(inp, r) {
 }
 
 // ── Calculate button ───────────────────────────────────────────────────────
-el('calc-btn').addEventListener('click', runCalculation);
 el('hdr-calc-btn').addEventListener('click', runCalculation);
 
 // ── Slider bindings ────────────────────────────────────────────────────────
@@ -784,22 +781,13 @@ el('tip-soil-type').addEventListener('change', () => {
   markDirty();
 });
 
-// ── Tab switching ──────────────────────────────────────────────────────────
-el('tab-calc-btn').addEventListener('click', () => {
-  el('tab-calc-btn').classList.add('active');
-  el('tab-report-btn').classList.remove('active');
+// ── Tab switching (header-controlled) ──────────────────────────────────────
+function showCalculatorTab() {
   el('tab-panel-calculator').style.display = '';
   el('tab-panel-report').style.display = 'none';
-});
+}
 
-el('hdr-report-btn').addEventListener('click', () => {
-  el('tab-report-btn').click();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-});
-
-el('tab-report-btn').addEventListener('click', () => {
-  el('tab-report-btn').classList.add('active');
-  el('tab-calc-btn').classList.remove('active');
+function showReportTab() {
   el('tab-panel-calculator').style.display = 'none';
   el('tab-panel-report').style.display = '';
   if (_lastResult) {
@@ -810,7 +798,15 @@ el('tab-report-btn').addEventListener('click', () => {
     el('report-stale').style.display = '';
     el('report-ready').style.display = 'none';
   }
+}
+
+el('hdr-report-btn').addEventListener('click', () => {
+  showReportTab();
+  el('tab-panel-report').scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
+
+const navCta = document.querySelector('.nav-cta');
+if (navCta) navCta.addEventListener('click', showCalculatorTab);
 
 // ── Report generation ──────────────────────────────────────────────────────
 function generateReport(inp, r) {
@@ -820,8 +816,8 @@ function generateReport(inp, r) {
 
   // Draw a fresh dedicated report pile canvas (taller, cleaner)
   const rpCanvas = document.createElement('canvas');
-  rpCanvas.width = 180; rpCanvas.height = 420;
-  drawPileOnCanvas(rpCanvas, inp, { padTop:32, padBottom:24, padLeft:8, padRight:66 });
+  rpCanvas.width = 150; rpCanvas.height = 340;
+  drawPileOnCanvas(rpCanvas, inp, { padTop:26, padBottom:20, padLeft:6, padRight:56 });
   const rpImgSrc = rpCanvas.toDataURL('image/png');
 
   const s  = calculateSeal(inp, r);
@@ -880,7 +876,12 @@ function generateReport(inp, r) {
 
     <div class="rpt-diagram-row">
       <div class="rpt-canvas-wrap">
-        <img src="${rpImgSrc}" width="180" height="420" alt="Pile cross-section diagram">
+        <img src="${rpImgSrc}" width="150" height="340" alt="Pile cross-section diagram">
+        <div class="rpt-diagram-caption">Pile &amp; embedment</div>
+      </div>
+      <div class="rpt-canvas-wrap">
+        ${drawSealSVG(s, 'rpt-')}
+        <div class="rpt-diagram-caption">Base seal — ${s.nRings} × ⌀${(s.tubeDia_m*1000).toFixed(0)}mm rings + dome</div>
       </div>
       <div class="rpt-force-col">
         <div class="rpt-section-title">Force breakdown at breakout</div>
@@ -932,20 +933,6 @@ function generateReport(inp, r) {
       </div>
       <div style="margin-top:0.6rem;font-size:0.7rem;color:var(--steel-dim);font-style:italic;">Phase 1 flow (${r.breakoutFlow_Ls.toFixed(1)} L/s) to be verified against triplex flow rating; Phase 2 working pressure (${r.extractionPressure_bar.toFixed(1)} bar) to be verified against centrifugal head rating.</div>
     </div>
-
-    <div class="rpt-section">
-      <div class="rpt-section-title">Base seal diagram</div>
-      <div class="rpt-seal-diagram-row">
-        <div class="rpt-seal-svg-wrap">${drawSealSVG(s, 'rpt-')}</div>
-        <div class="rpt-seal-caption">
-          <div style="font-size:0.7rem;color:var(--steel);line-height:1.7;">
-            <div><strong style="color:var(--steel-light)">${s.nRings} × ⌀${(s.tubeDia_m*1000).toFixed(0)} mm stacked toroidal seal tubes</strong></div>
-            <div>Stack height (rings + dome): ${s.stackHeight_m.toFixed(2)} m</div>
-            <div>Dome height above top ring: ${s.domeH.toFixed(2)} m</div>
-            <div>Sphere radius of dome: ${s.R_sphere.toFixed(2)} m</div>
-            <div style="margin-top:0.4rem;"><strong style="color:var(--sky-light)">Mechanism:</strong> Pressure-energised — top ring contact = applied + 1.5 bar inflation. Lower rings provide staged passive redundancy.</div>
-          </div>
-        </div>
       </div>
     </div>
 
