@@ -26,6 +26,10 @@
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2 2h7l3 3v7a1 1 0 01-1 1H2a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.3"/><path d="M9 2v3h3M4 6h6M4 8.5h6M4 11h4" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
           Export Report
         </button>
+        <button class="hdr-print-btn" id="hdr-print-btn" type="button" style="display:none">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 5V2h8v3M4 11H2V7a1 1 0 011-1h10a1 1 0 011 1v4h-2M4 9h8v5H4V9z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Print / Save PDF
+        </button>
         <button class="hdr-calc-btn" id="hdr-calc-btn" type="button">
           <span aria-hidden="true">
             <svg id="hdr-btn-icon-calc" width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="1" y="1" width="12" height="12" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M4 4h2M4 7h6M4 10h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
@@ -239,10 +243,6 @@
           <span class="report-stale" id="report-stale" style="display:none">⚠ Run the calculator first to generate a current report</span>
           <span class="report-ready" id="report-ready" style="display:none">✓ Report reflects current calculation</span>
         </div>
-        <button class="print-btn" onclick="window.print()">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 5V2h8v3M4 11H2V7a1 1 0 011-1h10a1 1 0 011 1v4h-2M4 9h8v5H4V9z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Print / Save as PDF
-        </button>
       </div>
       <div class="report-hint">In the browser print dialog, set <strong>Destination → Save as PDF</strong> and <strong>Paper → A4</strong>. Disable headers &amp; footers for a clean output.</div>
       <div class="report-content" id="report-content">
