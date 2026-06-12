@@ -352,6 +352,7 @@ select:focus { border-color: var(--sky-mid); }
 .rpt-diagram-row { display: flex; gap: 2rem; align-items: flex-start; margin-bottom: 1.5rem; }
 .rpt-canvas-wrap { flex-shrink: 0; border: 1px solid var(--panel-border); border-radius: var(--r-lg); padding: 0.75rem; background: rgba(0,0,0,0.2); }
 .rpt-canvas-wrap img { display: block; }
+.rpt-diagram-caption { font-size: 0.65rem; color: var(--steel-dim); text-align: center; margin-top: 5px; }
 .rpt-force-col { flex: 1; }
 .rpt-total-row { display: flex; justify-content: space-between; font-weight: 600; padding: 0.35rem 0; border-top: 1px solid rgba(56,189,248,0.3); margin-top: 4px; color: var(--white); }
 .rpt-total-row .rv { font-family: var(--font-mono); color: var(--sky-light); }
@@ -367,8 +368,8 @@ select:focus { border-color: var(--sky-mid); }
 
 /* ── PRINT STYLES ────────────────────────────────────── */
 @media print {
-  @page { size: A4; margin: 15mm 12mm; }
-  body { background: white !important; color: #1a1a2e !important; font-size: 10pt !important; }
+  @page { size: A4; margin: 10mm 10mm; }
+  body { background: white !important; color: #1a1a2e !important; font-size: 8.5pt !important; }
   .site-header, .hero, .calc-header, .tab-bar, .inputs-panel,
   .report-toolbar, .report-hint, .site-footer, .hdr-calc-btn,
   #tab-panel-calculator { display: none !important; }
@@ -402,6 +403,20 @@ select:focus { border-color: var(--sky-mid); }
   .rpt-seal-diagram-row { break-inside: avoid; }
   .rpt-seal-svg-wrap { border-color: #e2e8f0 !important; background: white !important; }
   .hdr-report-btn { display: none !important; }
+  /* 2-page compaction */
+  .rpt-kv { padding: 0.1rem 0 !important; font-size: 0.68rem !important; }
+  .rpt-kv .rv { font-size: 0.68rem !important; }
+  .rpt-section { margin-bottom: 0.65rem !important; }
+  .rpt-grid2 { gap: 0.9rem !important; margin-bottom: 0.65rem !important; }
+  .rpt-diagram-row { gap: 0.9rem !important; margin-bottom: 0.7rem !important; }
+  .rpt-header { margin-bottom: 0.7rem !important; padding-bottom: 0.45rem !important; }
+  .rpt-logo { font-size: 1.05rem !important; }
+  .rpt-section-title { margin-bottom: 0.35rem !important; padding-bottom: 0.2rem !important; }
+  .rpt-bar-row { margin-bottom: 0.25rem !important; font-size: 0.66rem !important; }
+  .rpt-canvas-wrap { padding: 0.4rem !important; }
+  .rpt-diagram-caption { font-size: 0.58rem !important; color: #64748b !important; }
+  .pump-tag, .rpt-tag { font-size: 0.58rem !important; padding: 1px 6px !important; }
+  .rpt-disclaimer { font-size: 6.3pt !important; margin-top: 0.7rem !important; padding-top: 0.45rem !important; line-height: 1.45 !important; }
   .rpt-diagram-row { break-inside: avoid; }
 }
 
